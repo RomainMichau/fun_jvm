@@ -1,12 +1,13 @@
-import ClassFile.ConstantPool.{resolveClass, resolveUtf8}
-import ClassFile.RawConstantPool.resolvePoolEntry
-import ClassFile.{ClassFileProperties, ConstantPool, read2Bytes}
+import ClassFileInfo.Attribute.Code
+import ClassFileInfo.ConstantPool.{resolveClass, resolveUtf8}
+import ClassFileInfo.RawConstantPool.resolvePoolEntry
+import ClassFileInfo.{ClassFileProperties, ConstantPool, MethodDescriptor, MethodName, read2Bytes}
 import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.implicits.{catsSyntaxTuple2Semigroupal, catsSyntaxTuple3Semigroupal, catsSyntaxTuple4Semigroupal, catsSyntaxValidatedId, toTraverseOps}
 
 import java.nio.file.{Files, Paths}
 
-object ClassFile {
+object ClassFileInfo {
 
   type Result[A] = ValidatedNel[String, A]
 
@@ -215,7 +216,7 @@ object ClassFile {
 
   }
 
-  enum Attribute(header: AttributeHeader):
+  enum Attribute(val header: AttributeHeader):
     case ConstantValue(poolEntry: PoolEntry) extends Attribute(AttributeHeader("ConstantValue", UInt(2)))
 
     // Code/Exceptions are variable-length (unlike ConstantValue's spec-fixed 2 bytes), so `length` is a real field carrying whatever attribute_length was actually read, not a hardcoded constant
@@ -232,8 +233,23 @@ object ClassFile {
   object ConstantPool {
     def apply(v: Vector[Option[PoolEntry]]): ConstantPool = v
 
+    enum LongOrDouble:
+      case Double_(d: Double)
+      case Long_(d: Long)
+
     extension (pool: ConstantPool) {
       def toVector: Vector[Option[PoolEntry]] = pool
+
+
+      def resolveLongOrDouble(index: UShort): Result[LongOrDouble] =
+        pool.lift(index).flatten match {
+          case Some(entry: PoolEntry.CONSTANT_Long_info) => LongOrDouble.Long_(entry.value).validNel
+          case Some(entry: PoolEntry.CONSTANT_Double_info) => LongOrDouble.Double_(entry.value).validNel
+          case Some(wut) =>
+            println(s"was expected double or long, got $wut")
+            s"was expected double or long, got $wut".invalidNel
+        }
+
 
       def resolveClass(index: UShort): Result[PoolEntry.CONSTANT_Class_info] =
         pool.lift(index).flatten match {
@@ -561,7 +577,11 @@ object ClassFile {
   case class MethodInfo(accessFlags: List[MethodAccessFlag],
                         name: PoolEntry.CONSTANT_Utf8_info,
                         descriptor: PoolEntry.CONSTANT_Utf8_info,
-                        attributes: List[Attribute])
+                        attributes: List[Attribute]) {
+    val code = attributes.collectFirst {
+      case x: Attribute.Code => x
+    }.getOrElse(throw new RuntimeException(s"Brudda, the Code attribute is missing for ${name.value}"))
+  }
 
   def readMethod(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(MethodInfo, NextOffset)] = {
     read2Bytes(bytes, offset, s"reading method flags on offset  $offset")
@@ -592,10 +612,14 @@ object ClassFile {
   }
 
 
-  def load(path: String): Result[ClassFile] = {
+  def load(path: String): Result[ClassFileInfo] = {
     Validated.catchNonFatal(Files.readAllBytes(Paths.get(path)))
       .leftMap(e => NonEmptyList.of(s"Failed to open $path: $e"))
-      .andThen(bytes => Validated.condNel(magicNumberMatch(bytes), bytes, s"$path does not start with a magic number bruh"))
+      .andThen(bytes => fromBytes(bytes))
+  }
+
+  def fromBytes(bytes: Array[Byte]): Result[ClassFileInfo] = {
+    Validated.condNel(magicNumberMatch(bytes), bytes, s"class bytes do not start with a magic number bruh")
       .andThen(bytes =>
         (majorVersion(bytes), minorVersion(bytes), getPoolsize(bytes)).mapN { (major, minor, poolSize) =>
           (bytes, (major, minor, poolSize))
@@ -610,23 +634,27 @@ object ClassFile {
         readProperties(bytes, nextOffset, pool).andThen { (properties, propertiesNextOffset) =>
           readFields(bytes, propertiesNextOffset, pool).andThen { (fields, fieldsNextOffset) =>
             readMethods(bytes, fieldsNextOffset, pool).andThen { (methods, methodsNextOffset) =>
+              val methodByName = methods.groupBy(x => (x.name.value, x.descriptor.value)).view.mapValues(_.head).toMap
               readAttributes(bytes, methodsNextOffset, pool).map { (attributes, _) =>
-                ClassFile(minor, major, pool, properties, fields, methods, attributes)
+                ClassFileInfo(minor, major, pool, properties, fields, methodByName, attributes)
               }
             }
           }
         }
       }
   }
+
+  type MethodName = String
+  type MethodDescriptor = String
 }
 
-class ClassFile(minorVersion: Int,
-                majorVersion: Int,
-                val constantPool: ConstantPool,
-                classFileProperties: ClassFileProperties,
-                fields: List[ClassFile.FieldInfo],
-                methods: List[ClassFile.MethodInfo],
-                classFileAttributes: List[ClassFile.Attribute]) {
+class ClassFileInfo(minorVersion: Int,
+                    majorVersion: Int,
+                    val constantPool: ConstantPool,
+                    classFileProperties: ClassFileProperties,
+                    fields: List[ClassFileInfo.FieldInfo],
+                    val methods: Map[(MethodName, MethodDescriptor), ClassFileInfo.MethodInfo],
+                    classFileAttributes: List[ClassFileInfo.Attribute]) {
   override def toString: String = {
     val thisClassName = classFileProperties.thisClass.name.value
     val superClassName = classFileProperties.superClass.fold("<none>")(_.name.value)
@@ -637,7 +665,7 @@ class ClassFile(minorVersion: Int,
       val attrs = if f.attributes.isEmpty then "" else s" ${f.attributes.mkString(", ")}"
       s"    ${f.accessFlags.mkString(", ")} ${f.descriptor.value} ${f.name.value}$attrs"
     }.mkString("\n")
-    val methodsStr = methods.map { m =>
+    val methodsStr = methods.values.map { m =>
       val attrs = if m.attributes.isEmpty then "" else s" ${m.attributes.mkString(", ")}"
       s"    ${m.accessFlags.mkString(", ")} ${m.name.value}${m.descriptor.value}$attrs"
     }.mkString("\n")

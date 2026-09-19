@@ -1,8 +1,9 @@
-## sbt project compiled with Scala 3
+# fun_jvm
 
-### Usage
+A toy project (just for fun) to explore how the JVM class file format and bytecode execution work, by writing a `.class` file parser — and eventually a tiny bytecode interpreter — in Scala 3.
 
-This is a normal sbt project. You can compile code with `sbt compile`, run it with `sbt run`, and `sbt console` will start a Scala 3 REPL.
+Not meant to be correct, complete, or used for anything real.
 
-For more information on the sbt-dotty plugin, see the
-[scala3-example-project](https://github.com/scala/scala3-example-project/blob/main/README.md).
+## Usage
+
+Normal sbt project. `sbt compile`, `sbt run`, `sbt test`, `sbt console` for a Scala 3 REPL.
