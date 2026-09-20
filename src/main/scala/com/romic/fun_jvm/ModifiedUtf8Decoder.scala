@@ -1,3 +1,5 @@
+package com.romic.fun_jvm
+
 import java.io.{ByteArrayInputStream, DataInputStream}
 
 // JVM class files encode CONSTANT_Utf8_info strings as "modified UTF-8" (spec 4.4.7):
