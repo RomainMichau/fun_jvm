@@ -2,6 +2,7 @@ package com.romic.fun_jvm
 
 object FType {
   type Next = Int
+
   // returns the parsed type, plus the index right after it in `st`
   def parseOne(st: String, i: Int): (FType, Next) = {
     st(i) match {
@@ -25,6 +26,8 @@ object FType {
 }
 
 enum FType:
+  def default: FValue = FValue.default(this)
+
   case FTypeLong
   case FTypeInt
   case FTypeShort

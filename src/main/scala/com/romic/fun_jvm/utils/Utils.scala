@@ -1,6 +1,11 @@
 package com.romic.fun_jvm.utils
 
+import java.nio.ByteBuffer
+
 object Utils {
+  def int2Bytes(int: Int): Array[Byte] = {
+    ByteBuffer.allocate(4).putInt(int).array
+  }
   case class ByteRange(from: Byte, to: Byte) {
     def contains(b: Byte): Boolean = b >= from && b <= to
   }
@@ -9,6 +14,7 @@ object Utils {
     def to(b2: Byte): ByteRange = ByteRange(b, b2)
 
     def toInt0Ext: Int = b & 0xff
+    def toUShort: UShort = UShort(b & 0xff)
   }
 
   object UShort {

@@ -2,6 +2,8 @@ package com.romic.fun_jvm
 
 import Clazz.{MethodDescriptor, MethodName, StaticFieldDescriptor, StaticFieldName}
 import com.romic.fun_jvm.FType.Void
+import com.romic.fun_jvm.Heap.Address
+import com.romic.fun_jvm.mirror.ClassClazz
 import com.romic.fun_jvm.utils.DescriptorHelper
 import com.romic.fun_jvm.utils.Utils.{UInt, UShort}
 
@@ -11,6 +13,7 @@ import scala.collection.mutable
 object Clazz {
   type StaticFieldName = String
   type StaticFieldDescriptor = String
+  type ClassName = String
 
   type MethodName = String
 
@@ -38,6 +41,7 @@ object Clazz {
   }
 
   case class MethodDescriptor(param: List[FType], return_ : FType)
+  case class MethodId(className: ClassName, methodName: MethodName, descriptor: MethodDescriptor)
 
 }
 
@@ -85,6 +89,18 @@ object PoolEntry {
     def toTuple: (String, MethodDescriptor) = (c.name.value, DescriptorHelper.parseMethodDescriptor(c.descriptor.value))
     def toTupleSt: (String, String) = (c.name.value, c.descriptor.value)
   }
+  
+  extension (s: CONSTANT_String_info) {
+    def resolveRef(heap: Heap): Heap.Address = {
+      s.maybeRef match {
+        case Some(a) => a
+        case None =>
+          val a = heap.storeStringLiteral(s.string.value)
+          s.maybeRef = Some(a)
+          a
+      }
+    }
+  }
 }
 
 enum PoolEntry:
@@ -92,7 +108,7 @@ enum PoolEntry:
   case CONSTANT_Fieldref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info)
   case CONSTANT_Methodref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info, var maybeResolved: Option[Method])
   case CONSTANT_InterfaceMethodref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info)
-  case CONSTANT_String_info(string: PoolEntry.CONSTANT_Utf8_info)
+  case CONSTANT_String_info(string: PoolEntry.CONSTANT_Utf8_info, var maybeRef: Option[Heap.Address])
   case CONSTANT_Integer_info(value: Int)
   case CONSTANT_Float_info(value: Float)
   case CONSTANT_Long_info(value: Long)
@@ -104,9 +120,17 @@ enum PoolEntry:
   case CONSTANT_InvokeDynamic_info(bootstrapMethodAttrIndex: UShort, nameAndType: PoolEntry.CONSTANT_NameAndType_info) // bootstrapMethodAttrIndex indexes the BootstrapMethods attribute, not the constant pool
 
 object RuntimeConstantPool {
+  def empty: RuntimeConstantPool = new RuntimeConstantPool(Array.empty)
+
   enum LongOrDouble:
     case Double_(value: Double)
     case Long_(value: Long)
+
+  enum IntFloatOrRef:
+    case Int_(value: Int)
+    case Float_(value: Float)
+    case StringRef(value: PoolEntry.CONSTANT_String_info)
+    case ClassRef(value: PoolEntry.CONSTANT_Class_info)
 }
 
 class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
@@ -116,6 +140,26 @@ class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
   def size: Int = entries.length
 
   def toVector: Vector[Option[PoolEntry]] = entries.toVector
+
+  def debug: String = {
+    entries.zipWithIndex
+      .collect { case (Some(e), i) => s"  [$i] = $e" }
+      .mkString("ConstantPool(\n", "\n", "\n)")
+  }
+
+  def resolveIntFlotOrRef(index: UShort): RuntimeConstantPool.IntFloatOrRef =
+    get(index.toInt) match {
+      case Some(entry: PoolEntry.CONSTANT_Integer_info) => RuntimeConstantPool.IntFloatOrRef.Int_(entry.value)
+      case Some(entry: PoolEntry.CONSTANT_Float_info) => RuntimeConstantPool.IntFloatOrRef.Float_(entry.value)
+      case Some(entry: PoolEntry.CONSTANT_String_info) => RuntimeConstantPool.IntFloatOrRef.StringRef(entry)
+      case Some(entry: PoolEntry.CONSTANT_Class_info) => RuntimeConstantPool.IntFloatOrRef.ClassRef(entry)
+      case Some(_: PoolEntry.CONSTANT_MethodHandle_info) =>
+        throw new RuntimeException("ldc on a MethodHandle constant is not implemented yet")
+      case Some(_: PoolEntry.CONSTANT_MethodType_info) =>
+        throw new RuntimeException("ldc on a MethodType constant is not implemented yet")
+      case Some(wut) => throw new RuntimeException(s"was expected int, float, string, class, method handle or method type, got $wut")
+      case None => throw new RuntimeException(s"No pool entry at index $index")
+    }
 
   def resolveLongOrDouble(index: UShort): RuntimeConstantPool.LongOrDouble =
     get(index.toInt) match {
@@ -157,9 +201,20 @@ class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
 class Clazz(val name: String,
             val staticFields: mutable.Map[(StaticFieldName, StaticFieldDescriptor), FValue], val constantPool: RuntimeConstantPool, val jvmMethods: Map[(MethodName, MethodDescriptor), JvmMethod],
             val nativeMethods: Map[(MethodName, MethodDescriptor), NativeMethod],
-            val instanceFields: List[(StaticFieldName, StaticFieldDescriptor)]) {
+            val instanceFields: List[(StaticFieldName, StaticFieldDescriptor)],
+            heap: Heap) {
   val maybeInitMet: Option[JvmMethod] = jvmMethods.get(("<init>", MethodDescriptor.void))
   val maybeClinitMet: Option[JvmMethod] = jvmMethods.get(("<clinit>", MethodDescriptor.void))
   val methods: Map[(MethodName, MethodDescriptor), Method] = jvmMethods ++ nativeMethods
+
+  private var classMirror: Option[Heap.Address] = None
+
+  def getClassMirror: Address = classMirror match {
+    case Some(a) => a
+    case None =>
+      val addr = heap.storeNew(ClassClazz.getClassClazz(heap))
+      classMirror = Some(addr)
+      addr
+  }
 
 }

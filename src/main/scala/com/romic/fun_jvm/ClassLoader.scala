@@ -61,17 +61,17 @@ class ClassLoaderBuilder(providers: List[ClassBytesProvider] = List.empty) {
 
   def withClassFileDir(classDir: Path): ClassLoaderBuilder = ClassLoaderBuilder(new ClassFileDirectoryProvider(classDir) +: providers)
 
-  def build(): ClassLoader = new ClassLoader(providers)
+  def build(heap: Heap): ClassLoader = new ClassLoader(providers, heap)
 }
 
-class ClassLoader(providers: List[ClassBytesProvider]) {
+class ClassLoader(providers: List[ClassBytesProvider], heap: Heap) {
   private val clazzs: mutable.Map[String, Clazz] = mutable.Map.empty
 
   private def loadClazz(className: String): Clazz = {
     val classBytes: Array[Byte] = providers.find(_.containsClass(className)).getOrElse(throw new Exception(s"No class provider contains $className"))
       .getClass(className)
     val clazz = ClassFileInfo.fromBytes(classBytes) match {
-      case Validated.Valid(byteCode) => byteCode.initClass()
+      case Validated.Valid(byteCode) => byteCode.initClass(heap)
       case Validated.Invalid(e) => throw new Exception(s"Unable to read bytecode for $className: ${e.toList.mkString(" ")}")
     }
 
@@ -79,7 +79,11 @@ class ClassLoader(providers: List[ClassBytesProvider]) {
   }
 
   private def initClass(clazz: Clazz): Unit = {
-    val meth = clazz.maybeClinitMet.foreach(meth => FunctionInterpreter(meth, clazz, this).run())
+    val meth = clazz.maybeClinitMet.foreach(meth => FunctionInterpreter(meth, clazz, this, heap).run())
+    if(clazz.name == "java/lang/System") {
+      val initMeth = clazz.jvmMethods.filter(_._1._1 == "initializeSystemClass").head._2
+      FunctionInterpreter(initMeth, clazz, this, heap).run()
+    }
   }
 
   def getClass(className: String): Clazz = {

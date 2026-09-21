@@ -8,7 +8,7 @@ import cats.data.{NonEmptyList, Validated, ValidatedNel}
 import cats.implicits.{catsSyntaxTuple2Semigroupal, catsSyntaxTuple3Semigroupal, catsSyntaxTuple4Semigroupal, catsSyntaxValidatedId, toTraverseOps}
 import com.romic.fun_jvm.Clazz.MethodDescriptor
 import com.romic.fun_jvm.utils.Utils.*
-import com.romic.fun_jvm.{Clazz, FValue, JvmMethod, Method, ModifiedUtf8Decoder, NativeMethod, RuntimeConstantPool, ExceptionTableEntry as RuntimeExceptionTableEntry, PoolEntry as RuntimePoolEntry}
+import com.romic.fun_jvm.{Clazz, FValue, Heap, JvmMethod, Method, ModifiedUtf8Decoder, NativeMethod, NativeMethodCatalog, RuntimeConstantPool, ExceptionTableEntry as RuntimeExceptionTableEntry, PoolEntry as RuntimePoolEntry}
 
 import java.nio.file.{Files, Paths}
 import scala.collection.mutable
@@ -640,13 +640,13 @@ class ClassFileInfo(minorVersion: Int,
                     fields: List[ClassFileInfo.FieldInfo],
                     methods: Map[(MethodName, MethodDescriptorStr), ClassFileInfo.MethodInfo],
                     classFileAttributes: List[ClassFileInfo.Attribute]) {
-  def initClass(): Clazz = {
+  def initClass(heap: Heap): Clazz = {
     val (staticFieldsRaw, instanceFieldsRaw) = fields.partition(_.accessFlags.contains(ACC_STATIC))
     val staticFields = staticFieldsRaw.map { x =>
       ((x.name.value, x.descriptor.value), FValue.initFromDescriptor(x.descriptor.value))
     }.toMap
     val instanceFields = instanceFieldsRaw.map { f => (f.name.value, f.descriptor.value) }
-    Clazz(classFileProperties.thisClass.name.value, mutable.Map.from(staticFields), toRuntimeConstantPool, toRuntimeJvmMethod, toNativeMethod, instanceFields)
+    Clazz(classFileProperties.thisClass.name.value, mutable.Map.from(staticFields), toRuntimeConstantPool, toRuntimeJvmMethod, toNativeMethod, instanceFields, heap)
   }
 
   private def toRuntimeJvmMethod: Map[(MethodName, MethodDescriptor), JvmMethod] = {
@@ -686,7 +686,7 @@ class ClassFileInfo(minorVersion: Int,
     case ClassFileInfo.PoolEntry.CONSTANT_InterfaceMethodref_info(clazz, nameAndType) =>
       RuntimePoolEntry.CONSTANT_InterfaceMethodref_info(toRuntimeClass(clazz), toRuntimeNameAndType(nameAndType))
     case ClassFileInfo.PoolEntry.CONSTANT_String_info(string) =>
-      RuntimePoolEntry.CONSTANT_String_info(toRuntimeUtf8(string))
+      RuntimePoolEntry.CONSTANT_String_info(toRuntimeUtf8(string), None)
     case ClassFileInfo.PoolEntry.CONSTANT_Integer_info(value) => RuntimePoolEntry.CONSTANT_Integer_info(value)
     case ClassFileInfo.PoolEntry.CONSTANT_Float_info(value) => RuntimePoolEntry.CONSTANT_Float_info(value)
     case ClassFileInfo.PoolEntry.CONSTANT_Long_info(value) => RuntimePoolEntry.CONSTANT_Long_info(value)
