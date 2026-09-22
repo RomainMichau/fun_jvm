@@ -8,8 +8,10 @@ import java.io.{ByteArrayInputStream, DataInputStream}
 // sequence. That's exactly the format java.io.DataInputStream.readUTF()/writeUTF()
 // use, so delegate to it instead of hand-rolling the decoder.
 object ModifiedUtf8Decoder {
+
   // `offset` must point at the u2 length field (i.e. right after the tag byte);
   // `length` is that already-parsed value (the number of following string bytes).
   def decode(bytes: Array[Byte], offset: Int, length: Int): String =
     new DataInputStream(new ByteArrayInputStream(bytes, offset, 2 + length)).readUTF()
+
 }

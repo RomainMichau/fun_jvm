@@ -240,11 +240,12 @@ object OpCode {
   def nameOf(b: Byte): String = fromByte(b).map(_.toString).getOrElse(f"unknown(0x${b & 0xff}%02x)")
 
   def codesToString(bytes: Vector[Byte]): String = {
-    if (bytes.isEmpty) "" else {
+    if (bytes.isEmpty) ""
+    else {
 
       val opCode = fromByte(bytes.head).get
-      val operandByteCount =opCode.operandBytes
-      if (operandByteCount == -1) then ???
+      val operandByteCount = opCode.operandBytes
+      if operandByteCount == -1 then ???
       val operandsSt = bytes.slice(1, 1 + operandByteCount).mkString("(", ",", ")")
       val res = s"${opCode.toString}${operandsSt}"
       s"$res ${codesToString(bytes.drop(1 + operandByteCount))}"
@@ -252,13 +253,15 @@ object OpCode {
   }
 
   def codeToString(bytes: Vector[Byte]): String = {
-    if (bytes.isEmpty) "" else {
+    if (bytes.isEmpty) ""
+    else {
       val opCode = fromByte(bytes.head).get
       val operandByteCount = opCode.operandBytes
-      if (operandByteCount == -1) then ???
+      if operandByteCount == -1 then ???
       val operandsSt = bytes.slice(1, 1 + operandByteCount).mkString("(", ",", ")")
       val res = s"${opCode.toString}${operandsSt}"
       res
     }
   }
+
 }

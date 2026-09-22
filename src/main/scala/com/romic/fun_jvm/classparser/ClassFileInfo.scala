@@ -3,12 +3,32 @@ package com.romic.fun_jvm.classparser
 import ClassFileInfo.ConstantPool.{resolveClass, resolveUtf8}
 import ClassFileInfo.FieldAccessFlag.ACC_STATIC
 import ClassFileInfo.RawConstantPool.resolvePoolEntry
-import ClassFileInfo.{ClassFileProperties, ConstantPool, MethodDescriptorStr, MethodName, read2Bytes}
+import ClassFileInfo.{ClassFileProperties, ConstantPool, MethodAccessFlag, MethodDescriptorStr, MethodName, read2Bytes}
 import cats.data.{NonEmptyList, Validated, ValidatedNel}
-import cats.implicits.{catsSyntaxTuple2Semigroupal, catsSyntaxTuple3Semigroupal, catsSyntaxTuple4Semigroupal, catsSyntaxValidatedId, toTraverseOps}
+import cats.implicits.{
+  catsSyntaxTuple2Semigroupal,
+  catsSyntaxTuple3Semigroupal,
+  catsSyntaxTuple4Semigroupal,
+  catsSyntaxValidatedId,
+  toTraverseOps
+}
 import com.romic.fun_jvm.Clazz.MethodDescriptor
+import com.romic.fun_jvm.classparser.ClassFileInfo.ClassAccessFlag.ACC_INTERFACE
 import com.romic.fun_jvm.utils.Utils.*
-import com.romic.fun_jvm.{Clazz, FValue, Heap, JvmMethod, Method, ModifiedUtf8Decoder, NativeMethod, NativeMethodCatalog, RuntimeConstantPool, ExceptionTableEntry as RuntimeExceptionTableEntry, PoolEntry as RuntimePoolEntry}
+import com.romic.fun_jvm.{
+  AbstractMethod,
+  Clazz,
+  FValue,
+  Heap,
+  JvmMethod,
+  Method,
+  ModifiedUtf8Decoder,
+  NativeMethod,
+  NativeMethodCatalog,
+  RuntimeConstantPool,
+  ExceptionTableEntry as RuntimeExceptionTableEntry,
+  PoolEntry as RuntimePoolEntry
+}
 
 import java.nio.file.{Files, Paths}
 import scala.collection.mutable
@@ -74,7 +94,10 @@ object ClassFileInfo {
         case PoolEntryRaw.CONSTANT_Methodref_info(classIndex, nameAndTypeIndex) =>
           (resolveClass(classIndex), resolveNameAndType(nameAndTypeIndex)).mapN(PoolEntry.CONSTANT_Methodref_info.apply)
         case PoolEntryRaw.CONSTANT_InterfaceMethodref_info(classIndex, nameAndTypeIndex) =>
-          (resolveClass(classIndex), resolveNameAndType(nameAndTypeIndex)).mapN(PoolEntry.CONSTANT_InterfaceMethodref_info.apply)
+          (
+            resolveClass(classIndex),
+            resolveNameAndType(nameAndTypeIndex)
+          ).mapN(PoolEntry.CONSTANT_InterfaceMethodref_info.apply)
         case PoolEntryRaw.CONSTANT_String_info(stringIndex) =>
           resolveUtf8(stringIndex).map(PoolEntry.CONSTANT_String_info.apply)
         case PoolEntryRaw.CONSTANT_Integer_info(value) => PoolEntry.CONSTANT_Integer_info(value).validNel
@@ -86,7 +109,8 @@ object ClassFileInfo {
         case PoolEntryRaw.CONSTANT_Utf8_info(value) => PoolEntry.CONSTANT_Utf8_info(value).validNel
         case PoolEntryRaw.CONSTANT_MethodHandle_info(referenceKind, referenceIndex) =>
           rawPool.lift(referenceIndex.toInt).flatten match {
-            case Some(referenced) => resolveRawEntry(referenced).map(PoolEntry.CONSTANT_MethodHandle_info(referenceKind, _))
+            case Some(referenced) =>
+              resolveRawEntry(referenced).map(PoolEntry.CONSTANT_MethodHandle_info(referenceKind, _))
             case None => s"No constant pool entry at index ${referenceIndex}".invalidNel
           }
         case PoolEntryRaw.CONSTANT_MethodType_info(descriptorIndex) =>
@@ -100,7 +124,9 @@ object ClassFileInfo {
           case None => None.validNel
           case Some(rawEntry) => rawPool.resolveRawEntry(rawEntry).map(Some(_))
         }
+
     }
+
   }
 
   private[classparser] opaque type RawConstantPool = Vector[Option[PoolEntryRaw]]
@@ -127,7 +153,12 @@ object ClassFileInfo {
     case CONSTANT_Class_info(name: PoolEntry.CONSTANT_Utf8_info)
     case CONSTANT_Fieldref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info)
     case CONSTANT_Methodref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info)
-    case CONSTANT_InterfaceMethodref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info)
+
+    case CONSTANT_InterfaceMethodref_info(
+      clazz: PoolEntry.CONSTANT_Class_info,
+      nameAndType: PoolEntry.CONSTANT_NameAndType_info
+    )
+
     case CONSTANT_String_info(string: PoolEntry.CONSTANT_Utf8_info)
     case CONSTANT_Integer_info(value: Int)
     case CONSTANT_Float_info(value: Float)
@@ -135,21 +166,36 @@ object ClassFileInfo {
     case CONSTANT_Double_info(value: Double)
     case CONSTANT_NameAndType_info(name: PoolEntry.CONSTANT_Utf8_info, descriptor: PoolEntry.CONSTANT_Utf8_info)
     case CONSTANT_Utf8_info(value: String)
-    case CONSTANT_MethodHandle_info(referenceKind: Byte, reference: PoolEntry) // reference target type (Fieldref/Methodref/InterfaceMethodref) depends on referenceKind, so it stays generic
+
+    case CONSTANT_MethodHandle_info(
+      referenceKind: Byte,
+      reference: PoolEntry
+    ) // reference target type (Fieldref/Methodref/InterfaceMethodref) depends on referenceKind, so it stays generic
     case CONSTANT_MethodType_info(descriptor: PoolEntry.CONSTANT_Utf8_info)
-    case CONSTANT_InvokeDynamic_info(bootstrapMethodAttrIndex: UShort, nameAndType: PoolEntry.CONSTANT_NameAndType_info) // bootstrapMethodAttrIndex indexes the BootstrapMethods attribute, not the constant pool
+
+    case CONSTANT_InvokeDynamic_info(
+      bootstrapMethodAttrIndex: UShort,
+      nameAndType: PoolEntry.CONSTANT_NameAndType_info
+    ) // bootstrapMethodAttrIndex indexes the BootstrapMethods attribute, not the constant pool
 
   private[classparser] case class AttributeHeader(attributeName: String, len: UInt)
 
   // the {start_pc, end_pc, handler_pc, catch_type} rows of Code_attribute's exception_table; catchType is None for catch_type == 0 ("catch all", used for finally)
-  private[classparser] case class ExceptionTableEntry(startPc: UShort, endPc: UShort, handlerPc: UShort, catchType: Option[PoolEntry.CONSTANT_Class_info])
+  private[classparser] case class ExceptionTableEntry(
+    startPc: UShort,
+    endPc: UShort,
+    handlerPc: UShort,
+    catchType: Option[PoolEntry.CONSTANT_Class_info]
+  )
 
   private[classparser] object Attribute {
-    def readConstantValue(byte: Array[Byte], offset: Int, pool: ConstantPool): Result[ConstantValue] = read2Bytes(byte, offset)
-      .map { idx =>
-        val value = pool(idx.toInt).get
-        ConstantValue(value)
-      }
+
+    def readConstantValue(byte: Array[Byte], offset: Int, pool: ConstantPool): Result[ConstantValue] =
+      read2Bytes(byte, offset)
+        .map { idx =>
+          val value = pool(idx.toInt).get
+          ConstantValue(value)
+        }
 
     def readCodeBody(bytes: Array[Byte], offset: Int, pool: ConstantPool, len: Int): Result[Attribute.Code] =
       read2Bytes(bytes, offset, "code attr max_stack").andThen { maxStack =>
@@ -161,23 +207,24 @@ object ClassFileInfo {
             read2Bytes(bytes, codeEnd, "code attr exception_table_length").andThen { exceptionTableLen =>
               val exceptionTableStart = codeEnd + 2
               (0 until exceptionTableLen.toInt).toList
-                .foldLeft((List.empty[ExceptionTableEntry], exceptionTableStart).validNel[String]) { case (accResult, _) =>
-                  accResult.andThen { (acc, entryOffset) =>
-                    read2Bytes(bytes, entryOffset, "exception_table start_pc").andThen { startPc =>
-                      read2Bytes(bytes, entryOffset + 2, "exception_table end_pc").andThen { endPc =>
-                        read2Bytes(bytes, entryOffset + 4, "exception_table handler_pc").andThen { handlerPc =>
-                          read2Bytes(bytes, entryOffset + 6, "exception_table catch_type").andThen { catchTypeIdx =>
-                            val catchType =
-                              if catchTypeIdx.toInt == 0 then None.validNel
-                              else pool.resolveClass(catchTypeIdx).map(Some(_))
-                            catchType.map { ct =>
-                              (acc :+ ExceptionTableEntry(startPc, endPc, handlerPc, ct), entryOffset + 8)
+                .foldLeft((List.empty[ExceptionTableEntry], exceptionTableStart).validNel[String]) {
+                  case (accResult, _) =>
+                    accResult.andThen { (acc, entryOffset) =>
+                      read2Bytes(bytes, entryOffset, "exception_table start_pc").andThen { startPc =>
+                        read2Bytes(bytes, entryOffset + 2, "exception_table end_pc").andThen { endPc =>
+                          read2Bytes(bytes, entryOffset + 4, "exception_table handler_pc").andThen { handlerPc =>
+                            read2Bytes(bytes, entryOffset + 6, "exception_table catch_type").andThen { catchTypeIdx =>
+                              val catchType =
+                                if catchTypeIdx.toInt == 0 then None.validNel
+                                else pool.resolveClass(catchTypeIdx).map(Some(_))
+                              catchType.map { ct =>
+                                (acc :+ ExceptionTableEntry(startPc, endPc, handlerPc, ct), entryOffset + 8)
+                              }
                             }
                           }
                         }
                       }
                     }
-                  }
                 }
                 .andThen { (exceptionTable, attributesOffset) =>
                   readAttributes(bytes, attributesOffset, pool).map { (attributes, _) =>
@@ -189,11 +236,22 @@ object ClassFileInfo {
         }
       }
 
-    def readExceptionsBody(bytes: Array[Byte], offset: Int, pool: ConstantPool, len: Int): Result[Attribute.Exceptions] =
+    def readExceptionsBody(
+      bytes: Array[Byte],
+      offset: Int,
+      pool: ConstantPool,
+      len: Int
+    ): Result[Attribute.Exceptions] =
       read2Bytes(bytes, offset, "exceptions attr number_of_exceptions").andThen { numberOfExceptions =>
         (0 until numberOfExceptions.toInt).toList
-          .traverse { i => read2Bytes(bytes, offset + 2 + i * 2, s"exceptions attr exception_index_table[$i]").andThen(pool.resolveClass) }
-          .map { exceptionIndexTable => Attribute.Exceptions(exceptionIndexTable, UInt(len.toLong)) }
+          .traverse { i =>
+            read2Bytes(
+              bytes,
+              offset + 2 + i * 2,
+              s"exceptions attr exception_index_table[$i]"
+            ).andThen(pool.resolveClass)
+          }
+          .map(exceptionIndexTable => Attribute.Exceptions(exceptionIndexTable, UInt(len.toLong)))
       }
 
   }
@@ -202,15 +260,19 @@ object ClassFileInfo {
     case ConstantValue(poolEntry: PoolEntry) extends Attribute(AttributeHeader("ConstantValue", UInt(2)))
 
     // Code/Exceptions are variable-length (unlike ConstantValue's spec-fixed 2 bytes), so `length` is a real field carrying whatever attribute_length was actually read, not a hardcoded constant
-    case Code(maxStack: UShort,
-              maxLocals: UShort,
-              code: Vector[Byte],
-              exceptionTable: List[ExceptionTableEntry],
-              attributes: List[Attribute],
-              length: UInt) extends Attribute(AttributeHeader("Code", length))
+    case Code(
+      maxStack: UShort,
+      maxLocals: UShort,
+      code: Vector[Byte],
+      exceptionTable: List[ExceptionTableEntry],
+      attributes: List[Attribute],
+      length: UInt
+    ) extends Attribute(AttributeHeader("Code", length))
 
-    case Exceptions(exceptionIndexTable: List[PoolEntry.CONSTANT_Class_info],
-                    length: UInt) extends Attribute(AttributeHeader("Exceptions", length))
+    case Exceptions(
+      exceptionIndexTable: List[PoolEntry.CONSTANT_Class_info],
+      length: UInt
+    ) extends Attribute(AttributeHeader("Exceptions", length))
 
   private[classparser] object ConstantPool {
     def apply(v: Vector[Option[PoolEntry]]): ConstantPool = v
@@ -222,7 +284,6 @@ object ClassFileInfo {
     extension (pool: ConstantPool) {
       def toVector: Vector[Option[PoolEntry]] = pool
 
-
       def resolveLongOrDouble(index: UShort): Result[LongOrDouble] =
         pool.lift(index.toInt).flatten match {
           case Some(entry: PoolEntry.CONSTANT_Long_info) => LongOrDouble.Long_(entry.value).validNel
@@ -232,7 +293,6 @@ object ClassFileInfo {
           case None =>
             s"No pool entry at index $index".invalidNel
         }
-
 
       def resolveClass(index: UShort): Result[PoolEntry.CONSTANT_Class_info] =
         pool.lift(index.toInt).flatten match {
@@ -247,6 +307,7 @@ object ClassFileInfo {
           case Some(wut) => s"was expected utf8, got $wut".invalidNel
           case None => s"no constant with idx $index".invalidNel
         }
+
       def size: Int = pool.size
 
     }
@@ -255,9 +316,8 @@ object ClassFileInfo {
 
   private[classparser] opaque type ConstantPool = Vector[Option[PoolEntry]]
 
-  private[classparser] def magicNumberMatch(bytes: Array[Byte]): Boolean = {
+  private[classparser] def magicNumberMatch(bytes: Array[Byte]): Boolean =
     bytes.take(4).map(_ & 0xff) sameElements Array(0xca, 0xfe, 0xba, 0xbe)
-  }
 
   private[classparser] def read2Bytes(bytes: Array[Byte], offset: Int, label: String = "smthing"): Result[UShort] = {
     bytes.toList.slice(offset, offset + 2) match {
@@ -281,13 +341,13 @@ object ClassFileInfo {
     }
   }
 
-
   private[classparser] def readFloat(bytes: Array[Byte], offset: Int, label: String = "smthing"): Result[Float] = {
     readInt(bytes, offset, label).map {
       case 0x7f800000 => Float.PositiveInfinity
       case 0xff800000 => Float.NegativeInfinity
-      case nan if (0x7f800001 to 0x7fffffff).contains(nan) ||
-        (0xff800001 to 0xffffffff).contains(nan) => Float.NaN
+      case nan
+          if (0x7f800001 to 0x7fffffff).contains(nan) ||
+            (0xff800001 to 0xffffffff).contains(nan) => Float.NaN
       case bits =>
         val s = if (bits >> 31) == 0 then 1 else -1
         val e = (bits >> 23) & 0xff
@@ -300,8 +360,9 @@ object ClassFileInfo {
 
   private[classparser] def readLong(bytes: Array[Byte], offset: Int, label: String = "smthing"): Result[Long] = {
     bytes.toList.slice(offset, offset + 8) match {
-      case a :: b :: c :: d :: e :: f :: g :: h :: _ => (((a.toLong & 0xff) << 56) | ((b & 0xff) << 48) | ((c & 0xff) << 40) | ((d & 0xff) << 32) |
-        ((e & 0xff) << 24) | ((f & 0xff) << 16) | ((g & 0xff) << 8) | (h & 0xff)).valid
+      case a :: b :: c :: d :: e :: f :: g :: h :: _ =>
+        (((a.toLong & 0xff) << 56) | ((b & 0xff) << 48) | ((c & 0xff) << 40) | ((d & 0xff) << 32) |
+          ((e & 0xff) << 24) | ((f & 0xff) << 16) | ((g & 0xff) << 8) | (h & 0xff)).valid
       case _ => s"Unable to get $label".invalidNel
     }
   }
@@ -310,8 +371,9 @@ object ClassFileInfo {
     readLong(bytes, offset, label).map {
       case 0x7ff0000000000000L => Double.PositiveInfinity
       case 0xfff0000000000000L => Double.NegativeInfinity
-      case nan if (0x7ff0000000000001L to 0x7fffffffffffffffL).contains(nan) ||
-        (0xfff0000000000001L to 0xffffffffffffffffL).contains(nan) => Double.NaN
+      case nan
+          if (0x7ff0000000000001L to 0x7fffffffffffffffL).contains(nan) ||
+            (0xfff0000000000001L to 0xffffffffffffffffL).contains(nan) => Double.NaN
       case bits =>
         val s = if (bits >> 63) == 0 then 1 else -1
         val e = ((bits >> 52) & 0x7ffL).toInt
@@ -332,7 +394,7 @@ object ClassFileInfo {
   private[classparser] def readPoolEntry(bytes: Array[Byte], offset: Int): Result[(PoolEntryRaw, NextOffset)] =
     (bytes(offset) & 0xff) match {
       case ConstantPoolTag.CONSTANT_Class => read2Bytes(bytes, offset + 1)
-        .map { idx => (PoolEntryRaw.CONSTANT_Class_info(idx), offset + 3) }
+          .map(idx => (PoolEntryRaw.CONSTANT_Class_info(idx), offset + 3))
       case ConstantPoolTag.CONSTANT_Fieldref =>
         read2Bytes(bytes, offset + 1).andThen {
           classIdx =>
@@ -355,49 +417,51 @@ object ClassFileInfo {
             }
         }
       case ConstantPoolTag.CONSTANT_String => read2Bytes(bytes, offset + 1)
-        .map { idx => (PoolEntryRaw.CONSTANT_String_info(idx), offset + 3) }
+          .map(idx => (PoolEntryRaw.CONSTANT_String_info(idx), offset + 3))
       case ConstantPoolTag.CONSTANT_Integer => readInt(bytes, offset + 1)
-        .map { i => (PoolEntryRaw.CONSTANT_Integer_info(i), offset + 5) }
+          .map(i => (PoolEntryRaw.CONSTANT_Integer_info(i), offset + 5))
       case ConstantPoolTag.CONSTANT_Float => readFloat(bytes, offset + 1)
-        .map { f => (PoolEntryRaw.CONSTANT_Float_info(f), offset + 5) }
+          .map(f => (PoolEntryRaw.CONSTANT_Float_info(f), offset + 5))
       case ConstantPoolTag.CONSTANT_Long => readLong(bytes, offset + 1)
-        .map { f => (PoolEntryRaw.CONSTANT_Long_info(f), offset + 9) }
+          .map(f => (PoolEntryRaw.CONSTANT_Long_info(f), offset + 9))
 
       case ConstantPoolTag.CONSTANT_Double => readDouble(bytes, offset + 1)
-        .map { d => (PoolEntryRaw.CONSTANT_Double_info(d), offset + 9) }
+          .map(d => (PoolEntryRaw.CONSTANT_Double_info(d), offset + 9))
       case ConstantPoolTag.CONSTANT_NameAndType => read2Bytes(bytes, offset + 1).andThen {
-        nameIdx =>
-          read2Bytes(bytes, offset + 3).map { descIdx =>
-            (PoolEntryRaw.CONSTANT_NameAndType_info(nameIdx, descIdx), offset + 5)
-          }
-      }
+          nameIdx =>
+            read2Bytes(bytes, offset + 3).map { descIdx =>
+              (PoolEntryRaw.CONSTANT_NameAndType_info(nameIdx, descIdx), offset + 5)
+            }
+        }
       case ConstantPoolTag.CONSTANT_Utf8 => read2Bytes(bytes, offset + 1).map {
-        len =>
-          val str: String = ModifiedUtf8Decoder.decode(bytes, offset + 1, len.toInt)
+          len =>
+            val str: String = ModifiedUtf8Decoder.decode(bytes, offset + 1, len.toInt)
 
-          (PoolEntryRaw.CONSTANT_Utf8_info(str), offset + 3 + len.toInt)
-      }
+            (PoolEntryRaw.CONSTANT_Utf8_info(str), offset + 3 + len.toInt)
+        }
       case ConstantPoolTag.CONSTANT_MethodHandle =>
         val reference_kind = bytes(offset + 1)
         read2Bytes(bytes, offset + 2)
-          .map { idx => (PoolEntryRaw.CONSTANT_MethodHandle_info(reference_kind, idx), offset + 4) }
+          .map(idx => (PoolEntryRaw.CONSTANT_MethodHandle_info(reference_kind, idx), offset + 4))
 
       case ConstantPoolTag.CONSTANT_MethodType => read2Bytes(bytes, offset + 1)
-        .map { idx => (PoolEntryRaw.CONSTANT_MethodType_info(idx), offset + 3) }
+          .map(idx => (PoolEntryRaw.CONSTANT_MethodType_info(idx), offset + 3))
       case ConstantPoolTag.CONSTANT_InvokeDynamic => read2Bytes(bytes, offset + 1).andThen {
-        bootstrap_method_attr_index =>
-          read2Bytes(bytes, offset + 3).map { name_and_type_index =>
-            (PoolEntryRaw.CONSTANT_InvokeDynamic_info(bootstrap_method_attr_index, name_and_type_index), offset + 5)
-          }
-      }
+          bootstrap_method_attr_index =>
+            read2Bytes(bytes, offset + 3).map { name_and_type_index =>
+              (PoolEntryRaw.CONSTANT_InvokeDynamic_info(bootstrap_method_attr_index, name_and_type_index), offset + 5)
+            }
+        }
       case wut => throw new RuntimeException(s"Wut is constant type $wut bruh ?")
     }
 
-  private[classparser] def readAllRawPoolEntry(bytes: Array[Byte],
-                                               poolSize: Int,
-                                               offset: Int = 10,
-                                               iter: Int = 0,
-                                               poolEntries: RawConstantPool = RawConstantPool(Vector(None))): Result[(RawConstantPool, NextOffset)] = {
+  private[classparser] def readAllRawPoolEntry(
+    bytes: Array[Byte],
+    poolSize: Int,
+    offset: Int = 10,
+    iter: Int = 0,
+    poolEntries: RawConstantPool = RawConstantPool(Vector(None))
+  ): Result[(RawConstantPool, NextOffset)] = {
     if (iter < poolSize - 1) {
       readPoolEntry(bytes, offset)
         .andThen { (newEntry, nextOffset) =>
@@ -406,15 +470,23 @@ object ClassFileInfo {
             case e: PoolEntryRaw.CONSTANT_Long_info => (Vector(Some(e), None), iter + 2)
             case e => (Vector(Some(e)), iter + 1)
           }
-          readAllRawPoolEntry(bytes, poolSize, nextOffset, newIter, RawConstantPool(poolEntries.toVector ++ newPoolEntries))
+          readAllRawPoolEntry(
+            bytes,
+            poolSize,
+            nextOffset,
+            newIter,
+            RawConstantPool(poolEntries.toVector ++ newPoolEntries)
+          )
         }
     } else {
       (poolEntries, offset).validNel
     }
   }
 
-  private[classparser] def readAllPoolEntry(bytes: Array[Byte],
-                                            poolSize: Int): Result[(ConstantPool, NextOffset)] =
+  private[classparser] def readAllPoolEntry(
+    bytes: Array[Byte],
+    poolSize: Int
+  ): Result[(ConstantPool, NextOffset)] =
     readAllRawPoolEntry(bytes, poolSize).andThen { (rawEntries, nextOffset) =>
       rawEntries.resolvePoolEntry.map((_, nextOffset))
     }
@@ -441,16 +513,29 @@ object ClassFileInfo {
     case ACC_SYNTHETIC extends FieldAccessFlag(0x1000)
     case ACC_ENUM extends FieldAccessFlag(0x4000)
 
-  private[classparser] case class ClassFileProperties(flags: List[ClassAccessFlag], thisClass: PoolEntry.CONSTANT_Class_info, superClass: Option[PoolEntry.CONSTANT_Class_info], interfaces: List[PoolEntry.CONSTANT_Class_info])
+  private[classparser] case class ClassFileProperties(
+    flags: List[ClassAccessFlag],
+    thisClass: PoolEntry.CONSTANT_Class_info,
+    superClass: Option[PoolEntry.CONSTANT_Class_info],
+    interfaces: List[PoolEntry.CONSTANT_Class_info]
+  )
 
-  private[classparser] def readInterfaces(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(List[PoolEntry.CONSTANT_Class_info], NextOffset)] =
+  private[classparser] def readInterfaces(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(List[PoolEntry.CONSTANT_Class_info], NextOffset)] =
     read2Bytes(bytes, offset, "interfaces count").andThen { count =>
       (0 until count.toInt).toList
-        .traverse { i => read2Bytes(bytes, offset + 2 + i * 2, s"interface $i").andThen(idx => pool.resolveClass(idx)) }
-        .map { interfaces => (interfaces, offset + 2 + count.toInt * 2) }
+        .traverse(i => read2Bytes(bytes, offset + 2 + i * 2, s"interface $i").andThen(idx => pool.resolveClass(idx)))
+        .map(interfaces => (interfaces, offset + 2 + count.toInt * 2))
     }
 
-  private[classparser] def readProperties(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(ClassFileProperties, NextOffset)] = {
+  private[classparser] def readProperties(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(ClassFileProperties, NextOffset)] = {
     val flags = read2Bytes(bytes, offset, "access flag").map { s =>
       ClassAccessFlag.values.filter(flag => (flag.mask & s.toInt) != 0).toList
     }
@@ -465,7 +550,11 @@ object ClassFileInfo {
     }
   }
 
-  private[classparser] def readAttributeHeader(byte: Array[Byte], offset: Int, pool: ConstantPool): Result[(AttributeHeader, NextOffset)] = {
+  private[classparser] def readAttributeHeader(
+    byte: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(AttributeHeader, NextOffset)] = {
     read2Bytes(byte, offset).andThen { idx =>
       pool.resolveUtf8(idx).andThen { name =>
         readUInt(byte, offset + 2)
@@ -474,12 +563,18 @@ object ClassFileInfo {
     }
   }
 
-  private[classparser] case class FieldInfo(accessFlags: List[FieldAccessFlag],
-                                            name: PoolEntry.CONSTANT_Utf8_info,
-                                            descriptor: PoolEntry.CONSTANT_Utf8_info,
-                                            attributes: Set[Attribute])
+  private[classparser] case class FieldInfo(
+    accessFlags: List[FieldAccessFlag],
+    name: PoolEntry.CONSTANT_Utf8_info,
+    descriptor: PoolEntry.CONSTANT_Utf8_info,
+    attributes: Set[Attribute]
+  )
 
-  private[classparser] def readAttribute(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(Option[Attribute], NextOffset)] = {
+  private[classparser] def readAttribute(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(Option[Attribute], NextOffset)] = {
     readAttributeHeader(bytes, offset, pool).andThen { (header, nextOffset) =>
       val attr = header.attributeName match {
         case "ConstantValue" => Attribute.readConstantValue(bytes, nextOffset, pool).map(Some(_))
@@ -492,30 +587,44 @@ object ClassFileInfo {
     }
   }
 
-  private[classparser] def readAttributes(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(List[Attribute], NextOffset)] = {
+  private[classparser] def readAttributes(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(List[Attribute], NextOffset)] = {
     read2Bytes(bytes, offset).andThen { attributeCount =>
-      (0 until attributeCount.toInt).foldLeft((List.empty[Attribute], offset + 2).validNel[String]) { case (accResult, _) =>
-        accResult.andThen { (acc, curOffset) =>
-          readAttribute(bytes, curOffset, pool).map { case (maybeAttr, nextOffset) => maybeAttr match {
-            case Some(attr) => (acc :+ attr, nextOffset)
-            case None => (acc, nextOffset)
+      (0 until attributeCount.toInt).foldLeft((List.empty[Attribute], offset + 2).validNel[String]) {
+        case (accResult, _) =>
+          accResult.andThen { (acc, curOffset) =>
+            readAttribute(bytes, curOffset, pool).map { case (maybeAttr, nextOffset) =>
+              maybeAttr match {
+                case Some(attr) => (acc :+ attr, nextOffset)
+                case None => (acc, nextOffset)
+              }
+            }
           }
-          }
-        }
       }
     }
   }
 
-  private[classparser] def readAndResolveUtf8Constant(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[PoolEntry.CONSTANT_Utf8_info] = {
+  private[classparser] def readAndResolveUtf8Constant(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[PoolEntry.CONSTANT_Utf8_info] = {
     read2Bytes(bytes, offset, s"reading resolvable utf8 constant on offset  $offset").andThen { nameIdx =>
       pool.resolveUtf8(nameIdx)
     }
   }
 
-  private[classparser] def readField(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(FieldInfo, NextOffset)] = {
+  private[classparser] def readField(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(FieldInfo, NextOffset)] = {
     read2Bytes(bytes, offset, s"reading field flags on offset  $offset")
       .andThen { fieldAccessFlagRaw =>
-        val accessFlags = FieldAccessFlag.values.filter { flag => (flag.mask & fieldAccessFlagRaw.toInt) != 0 }
+        val accessFlags = FieldAccessFlag.values.filter(flag => (flag.mask & fieldAccessFlagRaw.toInt) != 0)
         readAndResolveUtf8Constant(bytes, offset + 2, pool).andThen { fieldName =>
           readAndResolveUtf8Constant(bytes, offset + 4, pool).andThen { descriptor =>
             readAttributes(bytes, offset + 6, pool).map { (attributes, nextOffset) =>
@@ -527,8 +636,11 @@ object ClassFileInfo {
       }
   }
 
-
-  private[classparser] def readFields(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(List[FieldInfo], NextOffset)] = {
+  private[classparser] def readFields(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(List[FieldInfo], NextOffset)] = {
 
     read2Bytes(bytes, offset, "field count").andThen { fieldCount =>
       (0 until fieldCount.toInt).toList.foldLeft((List.empty[FieldInfo], offset + 2).validNel[String]) {
@@ -542,10 +654,28 @@ object ClassFileInfo {
     }
   }
 
+  private[classparser] object MethodAccessFlag {
+
+    def toMethodAccessFlag(flags: Set[MethodAccessFlag]): Method.AccessFlag = {
+      val accessFlags = flags.collect {
+        case ACC_PUBLIC => Method.AccessFlag.Public
+        case ACC_PROTECTED => Method.AccessFlag.Protected
+        case ACC_PRIVATE => Method.AccessFlag.Private
+      }
+      if (accessFlags.size > 1) {
+        throw new RuntimeException(s"bru, got > 1 acess flag: $flags")
+      }
+      if (accessFlags.isEmpty)
+        Method.AccessFlag.None
+      else accessFlags.head
+    }
+
+  }
+
   // Table 4.6-A. Method access flags
   private[classparser] enum MethodAccessFlag(val mask: Int):
     case ACC_PUBLIC extends MethodAccessFlag(0x0001)
-    case ACC_ extends MethodAccessFlag(0x0002)
+    case ACC_PRIVATE extends MethodAccessFlag(0x0002)
     case ACC_PROTECTED extends MethodAccessFlag(0x0004)
     case ACC_STATIC extends MethodAccessFlag(0x0008)
     case ACC_FINAL extends MethodAccessFlag(0x0010)
@@ -557,21 +687,29 @@ object ClassFileInfo {
     case ACC_STRICT extends MethodAccessFlag(0x0800)
     case ACC_SYNTHETIC extends MethodAccessFlag(0x1000)
 
-  private[classparser] case class MethodInfo(accessFlags: Set[MethodAccessFlag],
-                                             name: PoolEntry.CONSTANT_Utf8_info,
-                                             descriptor: PoolEntry.CONSTANT_Utf8_info,
-                                             attributes: List[Attribute]) {
+  private[classparser] case class MethodInfo(
+    accessFlags: Set[MethodAccessFlag],
+    name: PoolEntry.CONSTANT_Utf8_info,
+    descriptor: PoolEntry.CONSTANT_Utf8_info,
+    attributes: List[Attribute]
+  ) {
+
     val code = attributes.collectFirst {
       case x: Attribute.Code => x
     }
 
     val isNative: Boolean = accessFlags.contains(MethodAccessFlag.ACC_NATIVE)
+    val isAbstract: Boolean = accessFlags.contains(MethodAccessFlag.ACC_ABSTRACT)
   }
 
-  private[classparser] def readMethod(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(MethodInfo, NextOffset)] = {
+  private[classparser] def readMethod(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(MethodInfo, NextOffset)] = {
     read2Bytes(bytes, offset, s"reading method flags on offset  $offset")
       .andThen { methodAccessFlagRaw =>
-        val accessFlags = MethodAccessFlag.values.filter { flag => (flag.mask & methodAccessFlagRaw.toInt) != 0 }
+        val accessFlags = MethodAccessFlag.values.filter(flag => (flag.mask & methodAccessFlagRaw.toInt) != 0)
         readAndResolveUtf8Constant(bytes, offset + 2, pool).andThen { methodName =>
           readAndResolveUtf8Constant(bytes, offset + 4, pool).andThen { descriptor =>
             readAttributes(bytes, offset + 6, pool).map { (attributes, nextOffset) =>
@@ -582,7 +720,11 @@ object ClassFileInfo {
       }
   }
 
-  private[classparser] def readMethods(bytes: Array[Byte], offset: Int, pool: ConstantPool): Result[(List[MethodInfo], NextOffset)] = {
+  private[classparser] def readMethods(
+    bytes: Array[Byte],
+    offset: Int,
+    pool: ConstantPool
+  ): Result[(List[MethodInfo], NextOffset)] = {
 
     read2Bytes(bytes, offset, "method count").andThen { methodCount =>
       (0 until methodCount.toInt).toList.foldLeft((List.empty[MethodInfo], offset + 2).validNel[String]) {
@@ -595,7 +737,6 @@ object ClassFileInfo {
       }
     }
   }
-
 
   //  def load(path: String): Result[ClassFileInfo] = {
   //    Validated.catchNonFatal(Files.readAllBytes(Paths.get(path)))
@@ -633,29 +774,54 @@ object ClassFileInfo {
   private[classparser] type MethodDescriptorStr = String
 }
 
-class ClassFileInfo(minorVersion: Int,
-                    majorVersion: Int,
-                    constantPool: ConstantPool,
-                    classFileProperties: ClassFileProperties,
-                    fields: List[ClassFileInfo.FieldInfo],
-                    methods: Map[(MethodName, MethodDescriptorStr), ClassFileInfo.MethodInfo],
-                    classFileAttributes: List[ClassFileInfo.Attribute]) {
+class ClassFileInfo(
+  minorVersion: Int,
+  majorVersion: Int,
+  constantPool: ConstantPool,
+  classFileProperties: ClassFileProperties,
+  fields: List[ClassFileInfo.FieldInfo],
+  methods: Map[(MethodName, MethodDescriptorStr), ClassFileInfo.MethodInfo],
+  classFileAttributes: List[ClassFileInfo.Attribute]
+) {
+
   def initClass(heap: Heap): Clazz = {
     val (staticFieldsRaw, instanceFieldsRaw) = fields.partition(_.accessFlags.contains(ACC_STATIC))
     val staticFields = staticFieldsRaw.map { x =>
       ((x.name.value, x.descriptor.value), FValue.initFromDescriptor(x.descriptor.value))
     }.toMap
-    val instanceFields = instanceFieldsRaw.map { f => (f.name.value, f.descriptor.value) }
-    Clazz(classFileProperties.thisClass.name.value, mutable.Map.from(staticFields), toRuntimeConstantPool, toRuntimeJvmMethod, toNativeMethod, instanceFields, heap)
+    val instanceFields = instanceFieldsRaw.map(f => (f.name.value, f.descriptor.value))
+    Clazz(
+      classFileProperties.thisClass.name.value,
+      isInterface,
+      mutable.Map.from(staticFields),
+      toRuntimeConstantPool,
+      toRuntimeJvmMethod,
+      toNativeMethod,
+      toAbstractMethod,
+      instanceFields,
+      classFileProperties.superClass.map(_.name.value),
+      classFileProperties.interfaces.map(_.name.value),
+      heap
+    )
   }
+
+  private val isInterface = classFileProperties.flags.contains(ACC_INTERFACE)
 
   private def toRuntimeJvmMethod: Map[(MethodName, MethodDescriptor), JvmMethod] = {
     methods.collect {
-      case m if !m._2.isNative =>
-        val code = m._2.code.get
+      case m if !(m._2.isNative || m._2.isAbstract) =>
+        val code = m._2.code.getOrElse(throw new Exception(s"Was expecting code for function $m"))
         val methodName = m._1._1
         val methodDescriptor = MethodDescriptor.parseMethodDescriptor(m._1._2)
-        (methodName, methodDescriptor) -> JvmMethod(methodName, methodDescriptor, code.maxStack, code.maxLocals, code.code, code.exceptionTable.map(toRuntimeExceptionTableEntry))
+        (methodName, methodDescriptor) -> JvmMethod(
+          methodName,
+          methodDescriptor,
+          MethodAccessFlag.toMethodAccessFlag(m._2.accessFlags),
+          code.maxStack,
+          code.maxLocals,
+          code.code,
+          code.exceptionTable.map(toRuntimeExceptionTableEntry)
+        )
     }
   }
 
@@ -664,7 +830,23 @@ class ClassFileInfo(minorVersion: Int,
       case m if m._2.isNative =>
         val methodName = m._1._1
         val methodDescriptor = MethodDescriptor.parseMethodDescriptor(m._1._2)
-        (methodName, methodDescriptor) -> NativeMethod(methodName, methodDescriptor)
+        val methodAccess = m._2.accessFlags
+        (
+          methodName,
+          methodDescriptor
+        ) -> NativeMethod(methodName, methodDescriptor, MethodAccessFlag.toMethodAccessFlag(m._2.accessFlags))
+    }
+  }
+
+  private def toAbstractMethod: Map[(MethodName, MethodDescriptor), AbstractMethod] = {
+    methods.collect {
+      case m if m._2.isAbstract =>
+        val methodName = m._1._1
+        val methodDescriptor = MethodDescriptor.parseMethodDescriptor(m._1._2)
+        (
+          methodName,
+          methodDescriptor
+        ) -> AbstractMethod(methodName, methodDescriptor, MethodAccessFlag.toMethodAccessFlag(m._2.accessFlags))
     }
   }
 
@@ -684,7 +866,7 @@ class ClassFileInfo(minorVersion: Int,
     case ClassFileInfo.PoolEntry.CONSTANT_Methodref_info(clazz, nameAndType) =>
       RuntimePoolEntry.CONSTANT_Methodref_info(toRuntimeClass(clazz), toRuntimeNameAndType(nameAndType), None)
     case ClassFileInfo.PoolEntry.CONSTANT_InterfaceMethodref_info(clazz, nameAndType) =>
-      RuntimePoolEntry.CONSTANT_InterfaceMethodref_info(toRuntimeClass(clazz), toRuntimeNameAndType(nameAndType))
+      RuntimePoolEntry.CONSTANT_InterfaceMethodref_info(toRuntimeClass(clazz), toRuntimeNameAndType(nameAndType), None)
     case ClassFileInfo.PoolEntry.CONSTANT_String_info(string) =>
       RuntimePoolEntry.CONSTANT_String_info(toRuntimeUtf8(string), None)
     case ClassFileInfo.PoolEntry.CONSTANT_Integer_info(value) => RuntimePoolEntry.CONSTANT_Integer_info(value)
@@ -708,7 +890,8 @@ class ClassFileInfo(minorVersion: Int,
   private def toRuntimeClass(c: ClassFileInfo.PoolEntry.CONSTANT_Class_info): RuntimePoolEntry.CONSTANT_Class_info =
     RuntimePoolEntry.CONSTANT_Class_info(toRuntimeUtf8(c.name), None)
 
-  private def toRuntimeNameAndType(n: ClassFileInfo.PoolEntry.CONSTANT_NameAndType_info): RuntimePoolEntry.CONSTANT_NameAndType_info =
+  private def toRuntimeNameAndType(n: ClassFileInfo.PoolEntry.CONSTANT_NameAndType_info)
+    : RuntimePoolEntry.CONSTANT_NameAndType_info =
     RuntimePoolEntry.CONSTANT_NameAndType_info(toRuntimeUtf8(n.name), toRuntimeUtf8(n.descriptor))
 
   override def toString: String = {
@@ -716,7 +899,8 @@ class ClassFileInfo(minorVersion: Int,
     val superClassName = classFileProperties.superClass.fold("<none>")(_.name.value)
     val flags = classFileProperties.flags.mkString(", ")
     val interfaces = classFileProperties.interfaces.map(_.name.value).mkString(", ")
-    val pool = constantPool.toVector.zipWithIndex.collect { case (Some(entry), idx) => s"    #$idx = $entry" }.mkString("\n")
+    val pool =
+      constantPool.toVector.zipWithIndex.collect { case (Some(entry), idx) => s"    #$idx = $entry" }.mkString("\n")
     val fieldsStr = fields.map { f =>
       val attrs = if f.attributes.isEmpty then "" else s" ${f.attributes.mkString(", ")}"
       s"    ${f.accessFlags.mkString(", ")} ${f.descriptor.value} ${f.name.value}$attrs"
@@ -741,4 +925,5 @@ class ClassFileInfo(minorVersion: Int,
        |  attributes=
        |$attributesStr""".stripMargin
   }
+
 }

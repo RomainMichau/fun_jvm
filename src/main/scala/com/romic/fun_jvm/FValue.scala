@@ -4,6 +4,7 @@ import java.nio.ByteBuffer
 import FValue.FValueInt
 
 object FValue {
+
   extension (i: FValueInt) {
     def +(i2: FValueInt): FValueInt = FValueInt(i.value + i2.value)
   }
@@ -17,7 +18,6 @@ object FValue {
 
     def of(int: Int): FValueReference = FValueReference(Some(int))
   }
-
 
   def default(v: FType): FValue = v match {
     case FType.FTypeLong => FValueLong(0)
@@ -47,9 +47,11 @@ object FValue {
       case ref if ref.startsWith("[") => FValueArray(Array.empty)
     }
   }
+
 }
 
 enum FValue:
+
   def toBytes: Array[Byte] = this match
     case FValueLong(v) => ByteBuffer.allocate(8).putLong(v).array()
     case FValueInt(v) => ByteBuffer.allocate(4).putInt(v).array()

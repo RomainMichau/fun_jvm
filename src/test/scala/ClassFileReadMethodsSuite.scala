@@ -114,4 +114,5 @@ class ClassFileReadMethodsSuite extends munit.FunSuite {
     val bytes = Array[Byte](0, 0, 0, 0, 0, 0, 0)
     assert(ClassFileInfo.readLong(bytes, 0).isInvalid)
   }
+
 }

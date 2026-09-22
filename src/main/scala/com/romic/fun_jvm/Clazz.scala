@@ -3,6 +3,7 @@ package com.romic.fun_jvm
 import Clazz.{MethodDescriptor, MethodName, StaticFieldDescriptor, StaticFieldName}
 import com.romic.fun_jvm.FType.Void
 import com.romic.fun_jvm.Heap.Address
+import com.romic.fun_jvm.RuntimeConstantPool.{MethodRef, empty}
 import com.romic.fun_jvm.mirror.ClassClazz
 import com.romic.fun_jvm.utils.DescriptorHelper
 import com.romic.fun_jvm.utils.Utils.{UInt, UShort}
@@ -40,57 +41,103 @@ object Clazz {
 
   }
 
-  case class MethodDescriptor(param: List[FType], return_ : FType)
+  case class MethodDescriptor(params: List[FType], return_ : FType)
+
   case class MethodId(className: ClassName, methodName: MethodName, descriptor: MethodDescriptor)
 
 }
 
-case class ExceptionTableEntry(startPc: UShort, endPc: UShort, handlerPc: UShort, catchType: Option[PoolEntry.CONSTANT_Class_info])
+case class ExceptionTableEntry(
+  startPc: UShort,
+  endPc: UShort,
+  handlerPc: UShort,
+  catchType: Option[PoolEntry.CONSTANT_Class_info]
+)
+
+object Method {
+
+  enum AccessFlag:
+    case Private
+    case Public
+    case Protected
+    case None
+
+}
 
 sealed trait Method {
   def methodName: MethodName
 
   def methodDescriptor: MethodDescriptor
+
+  def access: Method.AccessFlag
 }
 
 case class JvmMethod(
-                      methodName: MethodName,
-                      methodDescriptor: MethodDescriptor,
-                      maxStack: UShort,
-                      maxLocals: UShort,
-                      code: Vector[Byte],
-                      exceptionTable: List[ExceptionTableEntry]) extends Method
+  methodName: MethodName,
+  methodDescriptor: MethodDescriptor,
+  access: Method.AccessFlag,
+  maxStack: UShort,
+  maxLocals: UShort,
+  code: Vector[Byte],
+  exceptionTable: List[ExceptionTableEntry]
+) extends Method
 
-case class NativeMethod(methodName: MethodName,
-                        methodDescriptor: MethodDescriptor) extends Method
+case class NativeMethod(
+  methodName: MethodName,
+  methodDescriptor: MethodDescriptor,
+  access: Method.AccessFlag
+) extends Method
 
+case class AbstractMethod(
+  methodName: MethodName,
+  methodDescriptor: MethodDescriptor,
+  access: Method.AccessFlag
+) extends Method
 
 object PoolEntry {
+
   extension (c: CONSTANT_Class_info) {
-    def resolveClazz(classLoader: ClassLoader): Clazz = {
+
+    def resolveClazz(classLoader: FClassLoader): Clazz = {
       if (c.maybeResolved.isEmpty) {
         c.maybeResolved = Some(classLoader.getClass(c.name.value))
       }
       c.maybeResolved.get
     }
+
   }
 
   extension (ref: CONSTANT_Methodref_info) {
-    def resolveMethod(classLoader: ClassLoader): (Clazz, Method) = {
+
+    def resolveMethod(classLoader: FClassLoader): (Clazz, Method) = {
       val clazz = ref.clazz.resolveClazz(classLoader)
       if (ref.maybeResolved.isEmpty) {
         ref.maybeResolved = Some(clazz.methods(ref.nameAndType.toTuple))
       }
       (clazz, ref.maybeResolved.get)
     }
+
+  }
+
+  extension (ref: CONSTANT_InterfaceMethodref_info) {
+
+    def resolveMethod(classLoader: FClassLoader): (Clazz, Method) = {
+      val clazz = ref.clazz.resolveClazz(classLoader)
+      if (ref.maybeResolved.isEmpty) {
+        ref.maybeResolved = Some(clazz.methods(ref.nameAndType.toTuple))
+      }
+      (clazz, ref.maybeResolved.get)
+    }
+
   }
 
   extension (c: CONSTANT_NameAndType_info) {
     def toTuple: (String, MethodDescriptor) = (c.name.value, DescriptorHelper.parseMethodDescriptor(c.descriptor.value))
     def toTupleSt: (String, String) = (c.name.value, c.descriptor.value)
   }
-  
+
   extension (s: CONSTANT_String_info) {
+
     def resolveRef(heap: Heap): Heap.Address = {
       s.maybeRef match {
         case Some(a) => a
@@ -100,14 +147,27 @@ object PoolEntry {
           a
       }
     }
+
   }
+
 }
 
 enum PoolEntry:
   case CONSTANT_Class_info(name: PoolEntry.CONSTANT_Utf8_info, var maybeResolved: Option[Clazz])
   case CONSTANT_Fieldref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info)
-  case CONSTANT_Methodref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info, var maybeResolved: Option[Method])
-  case CONSTANT_InterfaceMethodref_info(clazz: PoolEntry.CONSTANT_Class_info, nameAndType: PoolEntry.CONSTANT_NameAndType_info)
+
+  case CONSTANT_Methodref_info(
+    clazz: PoolEntry.CONSTANT_Class_info,
+    nameAndType: PoolEntry.CONSTANT_NameAndType_info,
+    var maybeResolved: Option[Method]
+  )
+
+  case CONSTANT_InterfaceMethodref_info(
+    clazz: PoolEntry.CONSTANT_Class_info,
+    nameAndType: PoolEntry.CONSTANT_NameAndType_info,
+    var maybeResolved: Option[Method]
+  )
+
   case CONSTANT_String_info(string: PoolEntry.CONSTANT_Utf8_info, var maybeRef: Option[Heap.Address])
   case CONSTANT_Integer_info(value: Int)
   case CONSTANT_Float_info(value: Float)
@@ -115,9 +175,17 @@ enum PoolEntry:
   case CONSTANT_Double_info(value: Double)
   case CONSTANT_NameAndType_info(name: PoolEntry.CONSTANT_Utf8_info, descriptor: PoolEntry.CONSTANT_Utf8_info)
   case CONSTANT_Utf8_info(value: String)
-  case CONSTANT_MethodHandle_info(referenceKind: Byte, reference: PoolEntry) // reference target type (Fieldref/Methodref/InterfaceMethodref) depends on referenceKind, so it stays generic
+
+  case CONSTANT_MethodHandle_info(
+    referenceKind: Byte,
+    reference: PoolEntry
+  ) // reference target type (Fieldref/Methodref/InterfaceMethodref) depends on referenceKind, so it stays generic
   case CONSTANT_MethodType_info(descriptor: PoolEntry.CONSTANT_Utf8_info)
-  case CONSTANT_InvokeDynamic_info(bootstrapMethodAttrIndex: UShort, nameAndType: PoolEntry.CONSTANT_NameAndType_info) // bootstrapMethodAttrIndex indexes the BootstrapMethods attribute, not the constant pool
+
+  case CONSTANT_InvokeDynamic_info(
+    bootstrapMethodAttrIndex: UShort,
+    nameAndType: PoolEntry.CONSTANT_NameAndType_info
+  ) // bootstrapMethodAttrIndex indexes the BootstrapMethods attribute, not the constant pool
 
 object RuntimeConstantPool {
   def empty: RuntimeConstantPool = new RuntimeConstantPool(Array.empty)
@@ -131,9 +199,15 @@ object RuntimeConstantPool {
     case Float_(value: Float)
     case StringRef(value: PoolEntry.CONSTANT_String_info)
     case ClassRef(value: PoolEntry.CONSTANT_Class_info)
+
+  enum MethodRef:
+    case InstanceMethod(v: PoolEntry.CONSTANT_Methodref_info)
+    case InterfaceMethod(v: PoolEntry.CONSTANT_InterfaceMethodref_info)
+
 }
 
 class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
+
   private def get(index: Int): Option[PoolEntry] =
     if index >= 0 && index < entries.length then entries(index) else None
 
@@ -157,7 +231,8 @@ class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
         throw new RuntimeException("ldc on a MethodHandle constant is not implemented yet")
       case Some(_: PoolEntry.CONSTANT_MethodType_info) =>
         throw new RuntimeException("ldc on a MethodType constant is not implemented yet")
-      case Some(wut) => throw new RuntimeException(s"was expected int, float, string, class, method handle or method type, got $wut")
+      case Some(wut) =>
+        throw new RuntimeException(s"was expected int, float, string, class, method handle or method type, got $wut")
       case None => throw new RuntimeException(s"No pool entry at index $index")
     }
 
@@ -190,22 +265,35 @@ class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
       case None => throw new RuntimeException(s"no constant with idx $index")
     }
 
-  def resolveMethodRef(index: UShort): PoolEntry.CONSTANT_Methodref_info =
+  def resolveMethodRef(index: UShort): MethodRef =
     get(index.toInt) match {
-      case Some(entry: PoolEntry.CONSTANT_Methodref_info) => entry
+      case Some(entry: PoolEntry.CONSTANT_Methodref_info) => MethodRef.InstanceMethod(entry)
+      case Some(entry: PoolEntry.CONSTANT_InterfaceMethodref_info) => MethodRef.InterfaceMethod(entry)
       case Some(wut) => throw new RuntimeException(s"was expected methodRef, got $wut")
       case None => throw new RuntimeException(s"no constant with idx $index")
     }
+
 }
 
-class Clazz(val name: String,
-            val staticFields: mutable.Map[(StaticFieldName, StaticFieldDescriptor), FValue], val constantPool: RuntimeConstantPool, val jvmMethods: Map[(MethodName, MethodDescriptor), JvmMethod],
-            val nativeMethods: Map[(MethodName, MethodDescriptor), NativeMethod],
-            val instanceFields: List[(StaticFieldName, StaticFieldDescriptor)],
-            heap: Heap) {
+class Clazz(
+  val name: String,
+  val isInterface: Boolean,
+  val staticFields: mutable.Map[(StaticFieldName, StaticFieldDescriptor), FValue],
+  val constantPool: RuntimeConstantPool,
+  val jvmMethods: Map[(MethodName, MethodDescriptor), JvmMethod],
+  val nativeMethods: Map[(MethodName, MethodDescriptor), NativeMethod],
+  val abstractMethod: Map[(MethodName, MethodDescriptor), AbstractMethod],
+  val instanceFields: List[(StaticFieldName, StaticFieldDescriptor)],
+  superClassName: Option[String],
+  interfacesName: List[String],
+  heap: Heap
+) {
   val maybeInitMet: Option[JvmMethod] = jvmMethods.get(("<init>", MethodDescriptor.void))
   val maybeClinitMet: Option[JvmMethod] = jvmMethods.get(("<clinit>", MethodDescriptor.void))
-  val methods: Map[(MethodName, MethodDescriptor), Method] = jvmMethods ++ nativeMethods
+  val methods: Map[(MethodName, MethodDescriptor), Method] = jvmMethods ++ nativeMethods ++ abstractMethod
+
+  private var resolvedSuper: Option[Clazz] = None
+  private var resolvedInterfaces: List[Clazz] = List.empty
 
   private var classMirror: Option[Heap.Address] = None
 
@@ -215,6 +303,73 @@ class Clazz(val name: String,
       val addr = heap.storeNew(ClassClazz.getClassClazz(heap))
       classMirror = Some(addr)
       addr
+  }
+
+  def resolveSuperAndInterfaces(classLoader: FClassLoader): Unit = {
+    resolvedSuper = superClassName.map(classLoader.getClass)
+    resolvedInterfaces = interfacesName.map(classLoader.getClass)
+  }
+
+  def maybeDirectSuperClass: Option[Clazz] = {
+    superClassName match {
+      case Some(value) => resolvedSuper match {
+          case Some(value) => Some(value)
+          case None => throw new Exception(s"$name super have not been loaded")
+        }
+      case None => None
+    }
+  }
+
+  def superClasses: List[Clazz] =
+    (maybeDirectSuperClass ++ maybeDirectSuperClass.toList.flatMap(_.superClasses)).toList
+
+  def directInterfaces: List[Clazz] = {
+    if (interfacesName.size != resolvedInterfaces.size)
+      throw new Exception(s"$name interfaces have not been loaded")
+    resolvedInterfaces
+  }
+
+  def superInterfaces: Set[Clazz] =
+    (this.directInterfaces ++ this.maybeDirectSuperClass.toList.flatMap(_.superInterfaces)).toSet
+
+  def isASuperClassOfThis(maybeSuper: Clazz): Boolean = superClasses.toSet.contains(maybeSuper)
+
+  private def findSuperMatch(filter: Clazz => Boolean): Option[Clazz] =
+    if (filter(this)) Some(this) else this.maybeDirectSuperClass.flatMap(_.findSuperMatch(filter))
+
+  private def resolveFuncSuper(name: MethodName, desc: MethodDescriptor): Option[JvmMethod] = {
+    val key = (name, desc)
+    findSuperMatch(_.jvmMethods.contains(key)).flatMap(_.jvmMethods.get(key))
+  }
+
+  def resolveFunctionRecurs(name: MethodName, desc: MethodDescriptor, objectClazz: Clazz): NativeMethod | JvmMethod = {
+    val key = (name, desc)
+
+    def attemptDirect: Option[Method] = methods.get(key)
+
+    def attemptSuper: Option[Method] = superClasses.find(_.jvmMethods.contains(key)).flatMap(_.jvmMethods.get(key))
+
+    def attemptObject: Option[Method] = if (isInterface) {
+      objectClazz.jvmMethods.get(key).filter(_.access == Method.AccessFlag.Public)
+    } else {
+      None
+    }
+
+    def attemptInterfaces: Option[Method] = superInterfaces.find { i =>
+      i.jvmMethods.contains(key)
+    }.flatMap(_.jvmMethods.get(key))
+
+    val res = attemptDirect
+      .orElse(attemptSuper)
+      .orElse(attemptObject)
+      .orElse(attemptInterfaces)
+
+    res match {
+      case None => throw new AbstractMethodError(s"Did not found method ${name} $desc for $name")
+      case Some(_: AbstractMethod) => throw new AbstractMethodError(s"method ${name} $desc for $name is abstract bruh")
+      case Some(yes: (NativeMethod | JvmMethod)) => yes
+    }
+
   }
 
 }

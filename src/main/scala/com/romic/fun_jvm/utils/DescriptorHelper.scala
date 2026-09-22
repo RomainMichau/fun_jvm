@@ -6,6 +6,7 @@ import com.romic.fun_jvm.FType
 import scala.annotation.tailrec
 
 object DescriptorHelper {
+
   def parseMethodDescriptor(descriptor: String): MethodDescriptor = {
     val closingParen = descriptor.indexOf(')')
     val paramsStr = descriptor.substring(1, closingParen)
@@ -23,4 +24,5 @@ object DescriptorHelper {
 
     MethodDescriptor(parseParams(0, Nil), returnType)
   }
+
 }

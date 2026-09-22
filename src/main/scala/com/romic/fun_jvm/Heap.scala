@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets
 import scala.collection.mutable
 
 object Heap {
+
   object Address {
     def apply(int: Int): Address = int
   }
@@ -20,11 +21,10 @@ object Heap {
   opaque type Address = Int
 }
 
-class Heap(size: Int) { 
+class Heap(size: Int) {
   private val heap: Array[Byte] = Array.fill[Byte](size)(0)
   private var nextSlot: Int = 1
   private val literalPool: mutable.Map[String, Heap.Address] = mutable.Map.empty
-
 
   private def writeOnHeap(bytes: Array[Byte]): Heap.Address = {
     val ref = nextSlot
@@ -48,7 +48,7 @@ class Heap(size: Int) {
   }
 
   def storeNew(clazz: Clazz): Heap.Address = {
-    val clazzBytes: Array[Byte] = clazz.instanceFields.flatMap { f => FValue.initFromDescriptor(f._2).toBytes }.toArray
+    val clazzBytes: Array[Byte] = clazz.instanceFields.flatMap(f => FValue.initFromDescriptor(f._2).toBytes).toArray
     writeOnHeap(clazzBytes)
   }
 
@@ -67,10 +67,10 @@ class Heap(size: Int) {
        |literalPool: ${literalPool.mkString(", ")}
        |)""".stripMargin
   }
-  
+
   def writeBytes2Arr(arrayRef: Heap.Address, index: Int, bytes: Array[Byte]): Unit = {
     var c = arrayRef.toInt + index
-    bytes.foreach{b =>
+    bytes.foreach { b =>
       heap(c) = b
       c += 1
     }

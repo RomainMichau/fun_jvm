@@ -23,6 +23,7 @@ object FType {
         (FType.FTypeArray(elementType), nextI)
     }
   }
+
 }
 
 enum FType:
