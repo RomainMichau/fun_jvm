@@ -1,7 +1,8 @@
 package com.romic.fun_jvm.well_known
 
 import com.romic.fun_jvm.Clazz.MethodDescriptor
-import com.romic.fun_jvm.{Clazz, FClassLoader, JvmMethod}
+import com.romic.fun_jvm.classloader.FClassLoader
+import com.romic.fun_jvm.{Clazz, JvmMethod}
 
 object WKProperties extends WellKnownClass {
   val fun_nat_st_initProperties = "initProperties"

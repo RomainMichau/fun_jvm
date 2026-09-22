@@ -1,12 +1,21 @@
 package com.romic.fun_jvm
 
-import Clazz.{MethodDescriptor, MethodName, StaticFieldDescriptor, StaticFieldName}
+import Clazz.{
+  InstanceFieldIndex,
+  InstanceFieldName,
+  MethodDescriptor,
+  MethodName,
+  StaticFieldDescriptor,
+  StaticFieldName
+}
+import com.romic.fun_jvm.classloader.FClassLoader.ClassId
 import com.romic.fun_jvm.FType.Void
 import com.romic.fun_jvm.Heap.Address
 import com.romic.fun_jvm.RuntimeConstantPool.{MethodRef, empty}
-import com.romic.fun_jvm.mirror.ClassClazz
+import com.romic.fun_jvm.classloader.FClassLoader
 import com.romic.fun_jvm.utils.DescriptorHelper
 import com.romic.fun_jvm.utils.Utils.{UInt, UShort}
+import com.romic.fun_jvm.well_known.WKClass
 
 import scala.annotation.tailrec
 import scala.collection.mutable
@@ -14,6 +23,9 @@ import scala.collection.mutable
 object Clazz {
   type StaticFieldName = String
   type StaticFieldDescriptor = String
+
+  type InstanceFieldName = String
+  type InstanceFieldIndex = Int
   type ClassName = String
 
   type MethodName = String
@@ -136,13 +148,17 @@ object PoolEntry {
     def toTupleSt: (String, String) = (c.name.value, c.descriptor.value)
   }
 
+  extension (c: CONSTANT_Fieldref_info) {
+    def toTuple: (String, FType) = (c.nameAndType.name.value, FType.parse(c.nameAndType.descriptor.value))
+  }
+
   extension (s: CONSTANT_String_info) {
 
-    def resolveRef(heap: Heap): Heap.Address = {
+    def resolveRef(heap: Heap, classLoader: FClassLoader): Heap.Address = {
       s.maybeRef match {
         case Some(a) => a
         case None =>
-          val a = heap.storeStringLiteral(s.string.value)
+          val a = heap.storeStringLiteral(s.string.value, classLoader)
           s.maybeRef = Some(a)
           a
       }
@@ -275,6 +291,18 @@ class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
 
 }
 
+sealed trait InstanceField {
+  def name: InstanceFieldName
+  def type_ : FType
+  def fieldIndex: InstanceFieldIndex
+}
+
+case class JavaInstanceField(name: InstanceFieldName, type_ : FType, fieldIndex: InstanceFieldIndex)
+    extends InstanceField
+
+case class SecretInstanceField(name: InstanceFieldName, type_ : FType, fieldIndex: InstanceFieldIndex)
+    extends InstanceField
+
 class Clazz(
   val name: String,
   val isInterface: Boolean,
@@ -283,10 +311,12 @@ class Clazz(
   val jvmMethods: Map[(MethodName, MethodDescriptor), JvmMethod],
   val nativeMethods: Map[(MethodName, MethodDescriptor), NativeMethod],
   val abstractMethod: Map[(MethodName, MethodDescriptor), AbstractMethod],
-  val instanceFields: List[(StaticFieldName, StaticFieldDescriptor)],
+  val instanceFields: Map[(InstanceFieldName, FType), InstanceField],
   superClassName: Option[String],
   interfacesName: List[String],
-  heap: Heap
+  heap: Heap,
+  val classId: ClassId,
+  val secretInstanceField: Map[(InstanceFieldName, FType), SecretInstanceField]
 ) {
   val maybeInitMet: Option[JvmMethod] = jvmMethods.get(("<init>", MethodDescriptor.void))
   val maybeClinitMet: Option[JvmMethod] = jvmMethods.get(("<clinit>", MethodDescriptor.void))
@@ -297,10 +327,10 @@ class Clazz(
 
   private var classMirror: Option[Heap.Address] = None
 
-  def getClassMirror: Address = classMirror match {
+  def getClassMirror(classLoader: FClassLoader): Address = classMirror match {
     case Some(a) => a
     case None =>
-      val addr = heap.storeNew(ClassClazz.getClassClazz(heap))
+      val addr = heap.storeNew(classLoader.getClass(WKClass.className))
       classMirror = Some(addr)
       addr
   }
@@ -342,7 +372,7 @@ class Clazz(
     findSuperMatch(_.jvmMethods.contains(key)).flatMap(_.jvmMethods.get(key))
   }
 
-  def resolveFunctionRecurs(name: MethodName, desc: MethodDescriptor, objectClazz: Clazz): NativeMethod | JvmMethod = {
+  def resolveSpecialMethod(name: MethodName, desc: MethodDescriptor, objectClazz: Clazz): NativeMethod | JvmMethod = {
     val key = (name, desc)
 
     def attemptDirect: Option[Method] = methods.get(key)
@@ -362,6 +392,29 @@ class Clazz(
     val res = attemptDirect
       .orElse(attemptSuper)
       .orElse(attemptObject)
+      .orElse(attemptInterfaces)
+
+    res match {
+      case None => throw new AbstractMethodError(s"Did not found method ${name} $desc for $name")
+      case Some(_: AbstractMethod) => throw new AbstractMethodError(s"method ${name} $desc for $name is abstract bruh")
+      case Some(yes: (NativeMethod | JvmMethod)) => yes
+    }
+
+  }
+
+  def resolveVirtualMethod(name: MethodName, desc: MethodDescriptor, objectClazz: Clazz): NativeMethod | JvmMethod = {
+    val key = (name, desc)
+
+    def attemptDirect: Option[Method] = methods.get(key)
+
+    def attemptSuper: Option[Method] = superClasses.find(_.jvmMethods.contains(key)).flatMap(_.jvmMethods.get(key))
+
+    def attemptInterfaces: Option[Method] = superInterfaces.find { i =>
+      i.jvmMethods.contains(key)
+    }.flatMap(_.jvmMethods.get(key))
+
+    val res = attemptDirect
+      .orElse(attemptSuper)
       .orElse(attemptInterfaces)
 
     res match {

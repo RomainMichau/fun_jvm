@@ -5,9 +5,7 @@ public class Main {
     final int myNumBis = 67;
 
     public static void main(String[] args) {
-        int a = 1 + 2;
-        myNum = a;
-        System.out.printf("yo");
+        Class<Integer> integerClass = Integer.class;
     }
 
 }

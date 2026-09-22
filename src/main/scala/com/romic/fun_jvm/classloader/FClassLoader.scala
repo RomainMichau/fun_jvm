@@ -1,12 +1,15 @@
-package com.romic.fun_jvm
+package com.romic.fun_jvm.classloader
 
 import cats.data.Validated
 import com.romic.fun_jvm.classparser.ClassFileInfo
+import com.romic.fun_jvm.*
+import com.romic.fun_jvm.utils.Utils
+import com.romic.fun_jvm.well_known.WKClass
 
 import java.nio.file.{Files, Path, Paths}
 import java.util.zip.{ZipEntry, ZipFile}
-import scala.jdk.CollectionConverters
 import scala.collection.mutable
+import scala.jdk.CollectionConverters
 import scala.jdk.CollectionConverters.EnumerationHasAsScala
 import scala.util.Using
 
@@ -70,16 +73,26 @@ class ClassLoaderBuilder(providers: List[ClassBytesProvider] = List.empty) {
 
 }
 
+object FClassLoader {
+  type ClassId = Int
+}
+
 class FClassLoader(providers: List[ClassBytesProvider], heap: Heap, nativeMethodCatalog: NativeMethodCatalog) {
   private val clazzs: mutable.Map[String, Clazz] = mutable.Map.empty
+
+  private val classByIds: mutable.ArrayBuffer[Clazz] = mutable.ArrayBuffer.empty
 
   private def loadClazz(className: String): Clazz = {
     val classBytes: Array[Byte] = providers.find(
       _.containsClass(className)
     ).getOrElse(throw new Exception(s"No class provider contains $className"))
       .getClass(className)
+    val classId = classByIds.size
     val clazz = ClassFileInfo.fromBytes(classBytes) match {
-      case Validated.Valid(byteCode) => byteCode.initClass(heap)
+      case Validated.Valid(byteCode: ClassFileInfo) =>
+        val clazz = byteCode.buildClazz(heap, classId)
+        classByIds += clazz
+        clazz
       case Validated.Invalid(e) =>
         throw new Exception(s"Unable to read bytecode for $className: ${e.toList.mkString(" ")}")
     }
@@ -105,10 +118,23 @@ class FClassLoader(providers: List[ClassBytesProvider], heap: Heap, nativeMethod
         val clazz = loadClazz(className)
         clazzs(className) = clazz
         initClass(clazz)
+        classByIds += clazz
         clazz
 
     }
+  }
 
+  private var primitiveClass: Option[Map[String, Heap.Address]] = None
+
+  def primitiveClass(name: String): Heap.Address =
+    primitiveClass.getOrElse(throw new RuntimeException("Primitive class must be init"))(name)
+
+  def initPrimitiveClass(): Unit = {
+    val clazz = this.getClass(WKClass.className)
+    val res = Utils.primitiveNames.map { name =>
+      name -> heap.storeNew(clazz)
+    }.toMap
+    primitiveClass = Some(res)
   }
 
 }

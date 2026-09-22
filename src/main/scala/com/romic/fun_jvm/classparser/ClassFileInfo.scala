@@ -12,25 +12,31 @@ import cats.implicits.{
   catsSyntaxValidatedId,
   toTraverseOps
 }
-import com.romic.fun_jvm.Clazz.MethodDescriptor
+import com.romic.fun_jvm.Clazz.{InstanceFieldIndex, InstanceFieldName, MethodDescriptor}
+import com.romic.fun_jvm.classloader.FClassLoader.ClassId
 import com.romic.fun_jvm.classparser.ClassFileInfo.ClassAccessFlag.ACC_INTERFACE
 import com.romic.fun_jvm.utils.Utils.*
+import com.romic.fun_jvm.well_known.WKClass
 import com.romic.fun_jvm.{
   AbstractMethod,
   Clazz,
+  FType,
   FValue,
   Heap,
+  JavaInstanceField,
   JvmMethod,
   Method,
   ModifiedUtf8Decoder,
   NativeMethod,
   NativeMethodCatalog,
   RuntimeConstantPool,
+  SecretInstanceField,
   ExceptionTableEntry as RuntimeExceptionTableEntry,
   PoolEntry as RuntimePoolEntry
 }
 
 import java.nio.file.{Files, Paths}
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 object ClassFileInfo {
@@ -455,6 +461,7 @@ object ClassFileInfo {
       case wut => throw new RuntimeException(s"Wut is constant type $wut bruh ?")
     }
 
+  @tailrec
   private[classparser] def readAllRawPoolEntry(
     bytes: Array[Byte],
     poolSize: Int,
@@ -463,8 +470,9 @@ object ClassFileInfo {
     poolEntries: RawConstantPool = RawConstantPool(Vector(None))
   ): Result[(RawConstantPool, NextOffset)] = {
     if (iter < poolSize - 1) {
-      readPoolEntry(bytes, offset)
-        .andThen { (newEntry, nextOffset) =>
+      readPoolEntry(bytes, offset) match {
+        case Validated.Invalid(e) => Validated.Invalid(e)
+        case Validated.Valid((newEntry, nextOffset)) =>
           val (newPoolEntries, newIter) = newEntry match {
             case e: PoolEntryRaw.CONSTANT_Double_info => (Vector(Some(e), None), iter + 2)
             case e: PoolEntryRaw.CONSTANT_Long_info => (Vector(Some(e), None), iter + 2)
@@ -477,7 +485,7 @@ object ClassFileInfo {
             newIter,
             RawConstantPool(poolEntries.toVector ++ newPoolEntries)
           )
-        }
+      }
     } else {
       (poolEntries, offset).validNel
     }
@@ -784,28 +792,63 @@ class ClassFileInfo(
   classFileAttributes: List[ClassFileInfo.Attribute]
 ) {
 
-  def initClass(heap: Heap): Clazz = {
+  private val className = classFileProperties.thisClass.name.value
+
+  def buildClazz(heap: Heap, classId: ClassId): Clazz = {
     val (staticFieldsRaw, instanceFieldsRaw) = fields.partition(_.accessFlags.contains(ACC_STATIC))
     val staticFields = staticFieldsRaw.map { x =>
-      ((x.name.value, x.descriptor.value), FValue.initFromDescriptor(x.descriptor.value))
+      ((x.name.value, x.descriptor.value), FValue.default(FType.parse(x.descriptor.value)))
     }.toMap
-    val instanceFields = instanceFieldsRaw.map(f => (f.name.value, f.descriptor.value))
+
+    val (instanceField, secretField) = toRuntimeInstanceFields
     Clazz(
-      classFileProperties.thisClass.name.value,
+      className,
       isInterface,
       mutable.Map.from(staticFields),
       toRuntimeConstantPool,
       toRuntimeJvmMethod,
       toNativeMethod,
       toAbstractMethod,
-      instanceFields,
+      instanceField,
       classFileProperties.superClass.map(_.name.value),
       classFileProperties.interfaces.map(_.name.value),
-      heap
+      heap,
+      classId,
+      secretField
     )
   }
 
+  private def getSecretField: List[(InstanceFieldName, FType)] = {
+    if (className == WKClass.className) {
+      List(("MirrorKlazzId", FType.FTypeInt))
+    } else List.empty
+  }
+
   private val isInterface = classFileProperties.flags.contains(ACC_INTERFACE)
+
+  type InstanceField = Map[(InstanceFieldName, FType), JavaInstanceField]
+  type SecretInstanceFieldCollection = Map[(InstanceFieldName, FType), SecretInstanceField]
+
+  private def toRuntimeInstanceFields: (InstanceField, SecretInstanceFieldCollection) = {
+    // start at 4 to let space for the Header (classID)
+    val (nxtIdx, instanceField) =
+      fields.foldLeft((4, Map.empty[(InstanceFieldName, FType), JavaInstanceField])) { case ((idx, acc), field) =>
+        val type_ = FType.parse(field.descriptor.value)
+        val nextIdx = idx + type_.byteCount.toInt0Ext
+        val newAcc = acc ++ Map((field.name.value, type_) -> JavaInstanceField(field.name.value, type_, idx))
+        (nextIdx, newAcc)
+      }
+
+    val (_, secretInstanceField) =
+      getSecretField.foldLeft((nxtIdx, Map.empty[(InstanceFieldName, FType), SecretInstanceField])) {
+        case ((idx, acc), field) =>
+          val type_ = field._2
+          val nextIdx = idx + type_.byteCount.toInt0Ext
+          val newAcc = acc ++ Map((field._1, type_) -> SecretInstanceField(field._1, type_, idx))
+          (nextIdx, newAcc)
+      }
+    (instanceField, secretInstanceField)
+  }
 
   private def toRuntimeJvmMethod: Map[(MethodName, MethodDescriptor), JvmMethod] = {
     methods.collect {

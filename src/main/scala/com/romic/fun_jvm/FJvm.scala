@@ -1,6 +1,7 @@
 package com.romic.fun_jvm
 
 import com.romic.fun_jvm.Clazz.MethodDescriptor
+import com.romic.fun_jvm.classloader.{ClassLoaderBuilder, FClassLoader}
 
 import java.nio.file.Path
 
@@ -27,6 +28,8 @@ object FJvm {
       .withClassFileDir(Path.of(classFilePath))
       .withJar(Path.of(s"/home/rmichau/.sdkman/candidates/java/8.0.442-zulu/jre/lib/rt.jar"))
       .build(heap, nativeMethodCatalog)
+
+    classLoader.initPrimitiveClass()
 
     val objectClazz = genesis(heap, classLoader)
     val mainClass = classLoader.getClass("JVMarch/Main")

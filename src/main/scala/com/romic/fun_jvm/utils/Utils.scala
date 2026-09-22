@@ -5,6 +5,9 @@ import scala.annotation.targetName
 
 object Utils {
 
+  val primitiveNames: Set[String] =
+    Set("boolean", "byte", "char", "short", "int", "long", "float", "double", "void")
+
   def int2Bytes(int: Int): Array[Byte] =
     ByteBuffer.allocate(4).putInt(int).array
 
@@ -13,7 +16,7 @@ object Utils {
   }
 
   extension (b: Byte) {
-    def to(b2: Byte): ByteRange = ByteRange(b, b2)
+    infix def to(b2: Byte): ByteRange = ByteRange(b, b2)
 
     def toInt0Ext: Int = b & 0xff
     def toUShort: UShort = UShort(b & 0xff)
