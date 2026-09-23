@@ -1,5 +1,7 @@
 package com.romic.fun_jvm
 
+import com.romic.fun_jvm.Clazz.ClassName
+
 object FType {
   type Next = Int
 
@@ -19,52 +21,89 @@ object FType {
       case 'L' =>
         val end = st.indexOf(';', i)
         val className = st.substring(i + 1, end)
-        (FType.FTypeReference(className), end + 1)
+        (FTypeClassRef.of(className), end + 1)
       case '[' =>
         val (elementType, nextI) = parseOne(st, i + 1)
-        (FType.FTypeArray(elementType), nextI)
+        (FTypeArray.of(elementType), nextI)
     }
+  }
+
+  object FTypeArray {
+    def of(type_ : FType): FType.FTypeArray = FType.FTypeArray(type_)
+
+    // Every array is stored as a reference, regardless of its element type.
+    val byteCount: Byte = 4
+  }
+
+  object FTypeClassRef {
+    def of(className: ClassName): FType.FTypeClassRef = FType.FTypeClassRef(className)
+
+    // Every object is stored as a reference, regardless of its class.
+    val byteCount: Byte = 4
+  }
+
+  case object FTypeLong extends FType {
+    def byteCount: Byte = 8
+  }
+
+  case object FTypeInt extends FType {
+    def byteCount: Byte = 4
+  }
+
+  case object FTypeShort extends FType {
+    def byteCount: Byte = 2
+  }
+
+  case object FTypeByte extends FType {
+    def byteCount: Byte = 1
+  }
+
+  case object FTypeFloat extends FType {
+    def byteCount: Byte = 4
+  }
+
+  case object FTypeDouble extends FType {
+    def byteCount: Byte = 8
+  }
+
+  case class FTypeClassRef(className: String) extends FType {
+    def byteCount: Byte = 4
+  }
+
+  case class FTypeArray(elementType: FType) extends FType {
+    def byteCount: Byte = 4
+  }
+
+  case object FTypeChar extends FType {
+    def byteCount: Byte = 2
+  }
+
+  case object Void extends FType {
+    def byteCount: Byte = throw new RuntimeException("void has no byte count")
+  }
+
+  case object FTypeBoolean extends FType {
+    def byteCount: Byte = 1
   }
 
 }
 
-enum FType:
+sealed trait FType {
   def default: FValue = FValue.default(this)
 
-  def byteCount: Byte = this match
-    case FTypeLong => 8
-    case FTypeInt => 4
-    case FTypeShort => 2
-    case FTypeByte => 1
-    case FTypeFloat => 4
-    case FTypeDouble => 8
-    case FTypeReference(_) => 4
-    case FTypeArray(_) => 4
-    case FTypeChar => 2
-    case FTypeBoolean => 1
-    case Void => throw new RuntimeException("void has no byte count")
+  def byteCount: Byte
 
   override def toString: String = this match
-    case FTypeByte => "B"
-    case FTypeChar => "C"
-    case FTypeDouble => "D"
-    case FTypeFloat => "F"
-    case FTypeInt => "I"
-    case FTypeLong => "J"
-    case FTypeShort => "S"
-    case FTypeBoolean => "Z"
-    case Void => "V"
-    case FTypeReference(className) => s"L$className;"
-    case FTypeArray(elementType) => s"[$elementType"
+    case FType.FTypeByte => "B"
+    case FType.FTypeChar => "C"
+    case FType.FTypeDouble => "D"
+    case FType.FTypeFloat => "F"
+    case FType.FTypeInt => "I"
+    case FType.FTypeLong => "J"
+    case FType.FTypeShort => "S"
+    case FType.FTypeBoolean => "Z"
+    case FType.Void => "V"
+    case FType.FTypeClassRef(className) => s"L$className;"
+    case FType.FTypeArray(elementType) => s"[$elementType"
 
-  case FTypeLong
-  case FTypeInt
-  case FTypeShort
-  case FTypeByte
-  case FTypeFloat
-  case FTypeDouble
-  case FTypeReference(className: String)
-  case FTypeArray(elementType: FType)
-  case FTypeChar
-  case Void
-  case FTypeBoolean
+}

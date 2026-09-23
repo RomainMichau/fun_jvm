@@ -1,8 +1,8 @@
 package com.romic.fun_jvm
 
-import java.nio.ByteBuffer
 import FValue.FValueInt
 import com.romic.fun_jvm.Clazz.ClassName
+import com.romic.fun_jvm.utils.Utils
 
 object FValue {
 
@@ -10,14 +10,63 @@ object FValue {
     def +(i2: FValueInt): FValueInt = FValueInt(i.value + i2.value)
   }
 
-  extension (i: FValueReference) {
-    def toHeapAddr: Heap.Address = Heap.Address(i.value.getOrElse(0))
+  extension (i: FValueClassRef) {
+    def toHeapAddr: Heap.Address = i.value.map(_.addr).getOrElse(Heap.Address.null_)
   }
 
-  object FValueReference {
-    def null_ : FValueReference = FValueReference(None, "java/lang/Object")
+  extension (i: FValueArrayRef) {
+    def toHeapAddr: Heap.Address = i.value.map(_.addr).getOrElse(Heap.Address.null_)
+  }
 
-    def of(int: Int, className: ClassName): FValueReference = FValueReference(Some(int), className)
+  object FValueClassRef {
+    def null_ : FValueClassRef = FValueClassRef(None)
+
+    def of(addr: Heap.Address, className: ClassName): FValueClassRef =
+      FValueClassRef(Some(ClassReferenceVal(addr, className)))
+
+  }
+
+  object FValueArrayRef {
+    def null_ : FValueArrayRef = FValueArrayRef(None)
+
+    def of(addr: Heap.Address, innerType: FType): FValueArrayRef =
+      FValueArrayRef(Some(ArrReferenceVal(addr, innerType)))
+
+  }
+
+  def fromBytes(type_ : FType, bytes: Array[Byte]): FValue = type_ match {
+    case FType.FTypeLong => FValueLong(Utils.bytes2Long(bytes))
+    case FType.FTypeInt => FValueInt(Utils.bytes2Int(bytes))
+    case FType.FTypeShort => FValueShort(Utils.bytes2Short(bytes))
+    case FType.FTypeByte => FValueByte(Utils.bytes2Byte(bytes))
+    case FType.FTypeFloat => FValueFloat(Utils.bytes2Float(bytes))
+    case FType.FTypeDouble => FValueDouble(Utils.bytes2Double(bytes))
+    case FType.FTypeChar => FValueChar(Utils.bytes2Char(bytes))
+    case FType.FTypeBoolean => FValueBoolean(Utils.bytes2Boolean(bytes))
+    case FType.FTypeClassRef(className) =>
+      Utils.bytes2Int(bytes) match {
+        case 0 => FValueClassRef.null_
+        case addr => FValueClassRef.of(Heap.Address(addr), className)
+      }
+    case FType.FTypeArray(elementType) =>
+      Utils.bytes2Int(bytes) match {
+        case 0 => FValueArrayRef.null_
+        case addr => FValueArrayRef.of(Heap.Address(addr), elementType)
+      }
+    case FType.Void => throw new RuntimeException("void has no value")
+  }
+
+  // JVM computational type "int" also covers boolean/byte/short/char on the operand stack
+  // and in local variables — real bytecode freely mixes them with true ints (e.g. a native
+  // method returning boolean feeding directly into ifne). Normalize them here instead of
+  // treating them as distinct stack types.
+  def asInt(v: FValue): FValueInt = v match {
+    case i: FValueInt => i
+    case FValueBoolean(b) => FValueInt(if (b) 1 else 0)
+    case FValueByte(b) => FValueInt(b.toInt)
+    case FValueShort(s) => FValueInt(s.toInt)
+    case FValueChar(c) => FValueInt(c.toInt)
+    case v => throw new RuntimeException(s"expected an int-like value, got $v")
   }
 
   def default(v: FType): FValue = v match {
@@ -27,49 +76,60 @@ object FValue {
     case FType.FTypeByte => FValueByte(0)
     case FType.FTypeFloat => FValueFloat(0)
     case FType.FTypeDouble => FValueDouble(0)
-    case FType.FTypeReference(_) => FValueReference.null_
-    case FType.FTypeArray(_) => FValueArray(Array.empty[FValue])
+    case FType.FTypeClassRef(_) => FValueClassRef.null_
+    case FType.FTypeArray(_) => FValueArrayRef.null_
     case FType.FTypeChar => FValueChar('\u0000')
     case FType.FTypeBoolean => FValueBoolean(false)
     case FType.Void => throw new RuntimeException("void has no default value")
   }
 
+  case class FValueLong(value: Long) extends FValue
+  case class FValueInt(value: Int) extends FValue
+  case class FValueShort(value: Short) extends FValue
+  case class FValueByte(value: Byte) extends FValue
+  case class FValueFloat(value: Float) extends FValue
+  case class FValueDouble(value: Double) extends FValue
+  case class FValueChar(v: Char) extends FValue
+  case class FValueBoolean(v: Boolean) extends FValue
+  case class FValueClassRef(value: Option[ClassReferenceVal]) extends FValueRef
+  case class FValueArrayRef(value: Option[ArrReferenceVal]) extends FValueRef
+
 }
 
-enum FValue:
+case class ClassReferenceVal(addr: Heap.Address, className: ClassName)
+
+case class ArrReferenceVal(addr: Heap.Address, innertType: FType)
+
+sealed trait FValueRef extends FValue
+
+sealed trait FValue {
 
   def getType: FType = this match
-    case FValueLong(_) => FType.FTypeLong
-    case FValueInt(_) => FType.FTypeInt
-    case FValueShort(_) => FType.FTypeShort
-    case FValueByte(_) => FType.FTypeByte
-    case FValueFloat(_) => FType.FTypeFloat
-    case FValueDouble(_) => FType.FTypeDouble
-    case FValueReference(_, c) => FType.FTypeReference(c)
-    case FValueChar(_) => FType.FTypeChar
-    case FValueBoolean(_) => FType.FTypeBoolean
-    case FValueArray(v) =>
-      FType.FTypeArray(v.headOption.map(_.getType).getOrElse(FType.FTypeReference("java/lang/Object")))
+    case FValue.FValueLong(_) => FType.FTypeLong
+    case FValue.FValueInt(_) => FType.FTypeInt
+    case FValue.FValueShort(_) => FType.FTypeShort
+    case FValue.FValueByte(_) => FType.FTypeByte
+    case FValue.FValueFloat(_) => FType.FTypeFloat
+    case FValue.FValueDouble(_) => FType.FTypeDouble
+    case FValue.FValueChar(_) => FType.FTypeChar
+    case FValue.FValueBoolean(_) => FType.FTypeBoolean
+    case FValue.FValueClassRef(Some(v)) =>
+      FType.FTypeClassRef(v.className)
+    case FValue.FValueClassRef(None) =>
+      throw new NullPointerException(s"Cannot get type of null value")
+    case FValue.FValueArrayRef(Some(v)) => FType.FTypeArray(v.innertType)
+    case FValue.FValueArrayRef(None) => throw new NullPointerException(s"Cannot get type of null value")
 
   def toBytes: Array[Byte] = this match
-    case FValueLong(v) => ByteBuffer.allocate(8).putLong(v).array()
-    case FValueInt(v) => ByteBuffer.allocate(4).putInt(v).array()
-    case FValueShort(v) => ByteBuffer.allocate(2).putShort(v).array()
-    case FValueByte(v) => Array(v)
-    case FValueFloat(v) => ByteBuffer.allocate(4).putFloat(v).array()
-    case FValueDouble(v) => ByteBuffer.allocate(8).putDouble(v).array()
-    case FValueReference(v, _) => ByteBuffer.allocate(4).putInt(v.getOrElse(0)).array()
-    case FValueChar(v) => ByteBuffer.allocate(2).putChar(v).array()
-    case FValueBoolean(v) => Array(if v then 1.toByte else 0.toByte)
-    case FValueArray(v) => v.flatMap(_.toBytes)
+    case FValue.FValueLong(v) => Utils.long2Bytes(v)
+    case FValue.FValueInt(v) => Utils.int2Bytes(v)
+    case FValue.FValueShort(v) => Utils.short2Bytes(v)
+    case FValue.FValueByte(v) => Utils.byte2Bytes(v)
+    case FValue.FValueFloat(v) => Utils.float2Bytes(v)
+    case FValue.FValueDouble(v) => Utils.double2Bytes(v)
+    case FValue.FValueChar(v) => Utils.char2Bytes(v)
+    case FValue.FValueBoolean(v) => Utils.boolean2Bytes(v)
+    case FValue.FValueClassRef(v) => Utils.int2Bytes(v.map(_.addr.toInt).getOrElse(0))
+    case FValue.FValueArrayRef(v) => Utils.int2Bytes(v.map(_.addr.toInt).getOrElse(0))
 
-  case FValueLong(value: Long)
-  case FValueInt(value: Int)
-  case FValueShort(value: Short)
-  case FValueByte(value: Byte)
-  case FValueFloat(value: Float)
-  case FValueDouble(value: Double)
-  case FValueReference(value: Option[Int], className: ClassName)
-  case FValueChar(v: Char)
-  case FValueBoolean(v: Boolean)
-  case FValueArray[A <: FValue](v: Array[A])
+}

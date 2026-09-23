@@ -10,7 +10,7 @@ object WKProperties extends WellKnownClass {
 
   val className: String = "java/util/Properties"
 
-  def fun_property(classLoader: FClassLoader): (Clazz, JvmMethod) = {
+  def fun_setProperty(classLoader: FClassLoader): (Clazz, JvmMethod) = {
     val clazz = getClazz(classLoader)
     val func = clazz.jvmMethods((
       "setProperty",

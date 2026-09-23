@@ -39,7 +39,15 @@ object FJvm {
     //  val yo = ClassFile.fromBytes(bytes)
     println(mainClass.jvmMethods.keys)
     val main = mainClass.jvmMethods(("main", MethodDescriptor.parseMethodDescriptor("([Ljava/lang/String;)V")))
-    BytecodeExecutor(main, mainClass, classLoader, heap, objectClazz, nativeMethodCatalog).run()
+    BytecodeExecutor(
+      main,
+      mainClass,
+      classLoader,
+      heap,
+      objectClazz,
+      nativeMethodCatalog,
+      BytecodeExecutor.sinkReturn
+    ).run()
   }
 
 }

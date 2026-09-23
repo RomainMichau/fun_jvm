@@ -378,8 +378,7 @@ object ClassFileInfo {
       case 0x7ff0000000000000L => Double.PositiveInfinity
       case 0xfff0000000000000L => Double.NegativeInfinity
       case nan
-          if (0x7ff0000000000001L to 0x7fffffffffffffffL).contains(nan) ||
-            (0xfff0000000000001L to 0xffffffffffffffffL).contains(nan) => Double.NaN
+          if (nan & 0x7ff0000000000000L) == 0x7ff0000000000000L && (nan & 0xfffffffffffffL) != 0 => Double.NaN
       case bits =>
         val s = if (bits >> 63) == 0 then 1 else -1
         val e = ((bits >> 52) & 0x7ffL).toInt
@@ -708,6 +707,7 @@ object ClassFileInfo {
 
     val isNative: Boolean = accessFlags.contains(MethodAccessFlag.ACC_NATIVE)
     val isAbstract: Boolean = accessFlags.contains(MethodAccessFlag.ACC_ABSTRACT)
+    val isStatic: Boolean = accessFlags.contains(MethodAccessFlag.ACC_STATIC)
   }
 
   private[classparser] def readMethod(
@@ -863,7 +863,8 @@ class ClassFileInfo(
           code.maxStack,
           code.maxLocals,
           code.code,
-          code.exceptionTable.map(toRuntimeExceptionTableEntry)
+          code.exceptionTable.map(toRuntimeExceptionTableEntry),
+          m._2.isStatic
         )
     }
   }
@@ -877,7 +878,12 @@ class ClassFileInfo(
         (
           methodName,
           methodDescriptor
-        ) -> NativeMethod(methodName, methodDescriptor, MethodAccessFlag.toMethodAccessFlag(m._2.accessFlags))
+        ) -> NativeMethod(
+          methodName,
+          methodDescriptor,
+          MethodAccessFlag.toMethodAccessFlag(m._2.accessFlags),
+          m._2.isStatic
+        )
     }
   }
 
@@ -889,7 +895,12 @@ class ClassFileInfo(
         (
           methodName,
           methodDescriptor
-        ) -> AbstractMethod(methodName, methodDescriptor, MethodAccessFlag.toMethodAccessFlag(m._2.accessFlags))
+        ) -> AbstractMethod(
+          methodName,
+          methodDescriptor,
+          MethodAccessFlag.toMethodAccessFlag(m._2.accessFlags),
+          m._2.isStatic
+        )
     }
   }
 

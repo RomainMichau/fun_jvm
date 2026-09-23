@@ -1,60 +1,42 @@
 package com.romic.fun_jvm
 
-import com.romic.fun_jvm.Clazz.{MethodDescriptor, MethodId}
-import com.romic.fun_jvm.FType.FTypeReference
-import com.romic.fun_jvm.well_known.WKProperties
+import com.romic.fun_jvm.FValue.FValueClassRef
+import com.romic.fun_jvm.well_known.{WKClass, WKDouble, WKFloat, WKSystem}
 
-type NativeMethodRunWithClazz = (clazz: Clazz) => (FThreadState, MethodExecutorFactory, List[FValue]) => Option[FValue]
-type NativeMethodRun = (FThreadState, MethodExecutorFactory, List[FValue]) => Option[FValue]
+type NativeMethodRunWithClazz =
+  (clazz: Clazz) => (FThreadState, MethodExecutorFactory, List[FValue], Option[FValueClassRef]) => Option[FValue]
+
+type NativeMethodRun = (FThreadState, MethodExecutorFactory, List[FValue], Option[FValueClassRef]) => Option[FValue]
 
 class NativeMethodCatalog(heap: Heap) {
 
+  // Applies to registerNatives regardless of which class declares it, so it can't live in a
+  // single WK<Class> file the way the other native methods below do.
   private def doNothing(clazz: Clazz)(
     s: FThreadState,
     executorFactory: MethodExecutorFactory,
-    params: List[FValue]
+    params: List[FValue],
+    this_ : Option[FValueClassRef]
   ): Option[FValue] = None
 
-  private def initProperties(clazz: Clazz)(
-    threadState: FThreadState,
-    executorFactory: MethodExecutorFactory,
-    params: List[FValue]
-  ): Option[FValue] = {
-    ???
-    val (clazz, setPropertyMeth) = WKProperties.fun_property(threadState.classLoader)
-    executorFactory.generateExecutorForMethod(setPropertyMeth, clazz, threadState).run()
-    None
-  }
-
-  private def getPrimitiveClass(clazz: Clazz)(
-    s: FThreadState,
-    executorFactory: MethodExecutorFactory,
-    params: List[FValue]
-  ): Option[FValue] =
-    ???
-
-  private val nativeMethodCatalog: Map[MethodId, NativeMethodRunWithClazz] = Map(
-    MethodId("java/lang/Object", "registerNatives", MethodDescriptor.void) -> doNothing,
-    MethodId("java/lang/System", "registerNatives", MethodDescriptor.void) -> doNothing,
-    MethodId("java/lang/Class", "registerNatives", MethodDescriptor.void) -> doNothing,
-    // TODO: stub for now, should allocate/cache a Class mirror per primitive name via
-    // heap.storeNew(ClassClazz.getClassClazz(heap)) + setField("name", ...) and return it
-    MethodId(
-      "java/lang/Class",
-      "getPrimitiveClass",
-      MethodDescriptor(List(FTypeReference("java/lang/String")), FTypeReference("java/lang/Class"))
-    ) -> getPrimitiveClass,
-    MethodId(
-      "java/lang/System",
-      "initProperties",
-      MethodDescriptor(List(FTypeReference("java/util/Properties")), FTypeReference("java/util/Properties"))
-    ) ->
-      initProperties
-  )
-
   def get(clazz: Clazz, method: NativeMethod): NativeMethodRun = {
-    print(method)
-    nativeMethodCatalog(MethodId(clazz.name, method.methodName, method.methodDescriptor))(clazz)
+    println(s"Preparing method ${clazz.name} $method")
+    val run: NativeMethodRunWithClazz = (clazz.name, method.methodName, method.methodDescriptor.toString) match {
+      case (_, "registerNatives", _) => doNothing
+      case ("java/lang/Class", "desiredAssertionStatus0", "(Ljava/lang/Class;)Z") => WKClass.desiredAssertionStatus0
+      // TODO: stub for now, should allocate/cache a Class mirror per primitive name via
+      // heap.storeNew(ClassClazz.getClassClazz(heap)) + setField("name", ...) and return it
+      case ("java/lang/Class", "getPrimitiveClass", "(Ljava/lang/String;)Ljava/lang/Class;") =>
+        WKClass.getPrimitiveClass
+      case ("java/lang/System", "initProperties", "(Ljava/util/Properties;)Ljava/util/Properties;") =>
+        WKSystem.initProperties
+      case ("java/lang/Float", "floatToRawIntBits", "(F)I") => WKFloat.floatToRawIntBits
+      case ("java/lang/Double", "doubleToLongBits", "(D)J") => WKDouble.doubleToLongBits
+      case ("java/lang/Double", "doubleToRawLongBits", "(D)J") => WKDouble.doubleToRawLongBits
+      case ("java/lang/Double", "longBitsToDouble", "(J)D") => WKDouble.longBitsToDouble
+      case other => throw new NoSuchElementException(s"No native method registered for $other")
+    }
+    run(clazz)
   }
 
 }

@@ -104,10 +104,12 @@ class FClassLoader(providers: List[ClassBytesProvider], heap: Heap, nativeMethod
     // this trigger init of super class
     clazz.resolveSuperAndInterfaces(this)
     val meth: Unit =
-      clazz.maybeClinitMet.foreach(meth => BytecodeExecutor(meth, clazz, this, heap, null, nativeMethodCatalog).run())
+      clazz.maybeClinitMet.foreach(meth =>
+        BytecodeExecutor(meth, clazz, this, heap, null, nativeMethodCatalog, BytecodeExecutor.sinkReturn).run()
+      )
     if (clazz.name == "java/lang/System") {
       val initMeth = clazz.jvmMethods.filter(_._1._1 == "initializeSystemClass").head._2
-      BytecodeExecutor(initMeth, clazz, this, heap, null, nativeMethodCatalog).run()
+      BytecodeExecutor(initMeth, clazz, this, heap, null, nativeMethodCatalog, BytecodeExecutor.sinkReturn).run()
     }
   }
 

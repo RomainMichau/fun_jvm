@@ -14,7 +14,7 @@ object Frame {
 class Frame(
   val localVariables: LocalVariables,
   val operandStack: OperandStack,
-  val currentClass: Clazz,
+  val declaringClazz: Clazz,
   var pc: Int = 0
 ) {
 

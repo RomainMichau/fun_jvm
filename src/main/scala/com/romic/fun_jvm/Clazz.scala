@@ -53,7 +53,9 @@ object Clazz {
 
   }
 
-  case class MethodDescriptor(params: List[FType], return_ : FType)
+  case class MethodDescriptor(params: List[FType], return_ : FType) {
+    override def toString: String = s"(${params.mkString})$return_"
+  }
 
   case class MethodId(className: ClassName, methodName: MethodName, descriptor: MethodDescriptor)
 
@@ -82,6 +84,8 @@ sealed trait Method {
   def methodDescriptor: MethodDescriptor
 
   def access: Method.AccessFlag
+
+  def isStatic: Boolean
 }
 
 case class JvmMethod(
@@ -91,19 +95,22 @@ case class JvmMethod(
   maxStack: UShort,
   maxLocals: UShort,
   code: Vector[Byte],
-  exceptionTable: List[ExceptionTableEntry]
+  exceptionTable: List[ExceptionTableEntry],
+  isStatic: Boolean
 ) extends Method
 
 case class NativeMethod(
   methodName: MethodName,
   methodDescriptor: MethodDescriptor,
-  access: Method.AccessFlag
+  access: Method.AccessFlag,
+  isStatic: Boolean
 ) extends Method
 
 case class AbstractMethod(
   methodName: MethodName,
   methodDescriptor: MethodDescriptor,
-  access: Method.AccessFlag
+  access: Method.AccessFlag,
+  isStatic: Boolean
 ) extends Method
 
 object PoolEntry {
@@ -144,6 +151,7 @@ object PoolEntry {
   }
 
   extension (c: CONSTANT_NameAndType_info) {
+    def methodDescriptor: MethodDescriptor = DescriptorHelper.parseMethodDescriptor(c.descriptor.value)
     def toTuple: (String, MethodDescriptor) = (c.name.value, DescriptorHelper.parseMethodDescriptor(c.descriptor.value))
     def toTupleSt: (String, String) = (c.name.value, c.descriptor.value)
   }
@@ -294,13 +302,13 @@ class RuntimeConstantPool(entries: Array[Option[PoolEntry]]) {
 sealed trait InstanceField {
   def name: InstanceFieldName
   def type_ : FType
-  def fieldIndex: InstanceFieldIndex
+  def fieldByteIndex: InstanceFieldIndex
 }
 
-case class JavaInstanceField(name: InstanceFieldName, type_ : FType, fieldIndex: InstanceFieldIndex)
+case class JavaInstanceField(name: InstanceFieldName, type_ : FType, fieldByteIndex: InstanceFieldIndex)
     extends InstanceField
 
-case class SecretInstanceField(name: InstanceFieldName, type_ : FType, fieldIndex: InstanceFieldIndex)
+case class SecretInstanceField(name: InstanceFieldName, type_ : FType, fieldByteIndex: InstanceFieldIndex)
     extends InstanceField
 
 class Clazz(
@@ -372,22 +380,27 @@ class Clazz(
     findSuperMatch(_.jvmMethods.contains(key)).flatMap(_.jvmMethods.get(key))
   }
 
-  def resolveSpecialMethod(name: MethodName, desc: MethodDescriptor, objectClazz: Clazz): NativeMethod | JvmMethod = {
+  def resolveSpecialMethod(
+    name: MethodName,
+    desc: MethodDescriptor,
+    objectClazz: Clazz
+  ): (Clazz, NativeMethod | JvmMethod) = {
     val key = (name, desc)
 
-    def attemptDirect: Option[Method] = methods.get(key)
+    def attemptDirect: Option[(Clazz, Method)] = methods.get(key).map(this -> _)
 
-    def attemptSuper: Option[Method] = superClasses.find(_.jvmMethods.contains(key)).flatMap(_.jvmMethods.get(key))
+    def attemptSuper: Option[(Clazz, Method)] =
+      superClasses.find(_.methods.contains(key)).map(c => c -> c.methods(key))
 
-    def attemptObject: Option[Method] = if (isInterface) {
-      objectClazz.jvmMethods.get(key).filter(_.access == Method.AccessFlag.Public)
+    def attemptObject: Option[(Clazz, Method)] = if (isInterface) {
+      objectClazz.methods.get(key).filter(_.access == Method.AccessFlag.Public).map(objectClazz -> _)
     } else {
       None
     }
 
-    def attemptInterfaces: Option[Method] = superInterfaces.find { i =>
-      i.jvmMethods.contains(key)
-    }.flatMap(_.jvmMethods.get(key))
+    def attemptInterfaces: Option[(Clazz, Method)] = superInterfaces.find { i =>
+      i.methods.contains(key)
+    }.map(i => i -> i.methods(key))
 
     val res = attemptDirect
       .orElse(attemptSuper)
@@ -396,22 +409,28 @@ class Clazz(
 
     res match {
       case None => throw new AbstractMethodError(s"Did not found method ${name} $desc for $name")
-      case Some(_: AbstractMethod) => throw new AbstractMethodError(s"method ${name} $desc for $name is abstract bruh")
-      case Some(yes: (NativeMethod | JvmMethod)) => yes
+      case Some((_, _: AbstractMethod)) =>
+        throw new AbstractMethodError(s"method ${name} $desc for $name is abstract bruh")
+      case Some((declaringClazz, yes: (NativeMethod | JvmMethod))) => (declaringClazz, yes)
     }
 
   }
 
-  def resolveVirtualMethod(name: MethodName, desc: MethodDescriptor, objectClazz: Clazz): NativeMethod | JvmMethod = {
+  def resolveVirtualMethod(
+    name: MethodName,
+    desc: MethodDescriptor,
+    objectClazz: Clazz
+  ): (Clazz, NativeMethod | JvmMethod) = {
     val key = (name, desc)
 
-    def attemptDirect: Option[Method] = methods.get(key)
+    def attemptDirect: Option[(Clazz, Method)] = methods.get(key).map(this -> _)
 
-    def attemptSuper: Option[Method] = superClasses.find(_.jvmMethods.contains(key)).flatMap(_.jvmMethods.get(key))
+    def attemptSuper: Option[(Clazz, Method)] =
+      superClasses.find(_.methods.contains(key)).map(c => c -> c.methods(key))
 
-    def attemptInterfaces: Option[Method] = superInterfaces.find { i =>
-      i.jvmMethods.contains(key)
-    }.flatMap(_.jvmMethods.get(key))
+    def attemptInterfaces: Option[(Clazz, Method)] = superInterfaces.find { i =>
+      i.methods.contains(key)
+    }.map(i => i -> i.methods(key))
 
     val res = attemptDirect
       .orElse(attemptSuper)
@@ -419,8 +438,9 @@ class Clazz(
 
     res match {
       case None => throw new AbstractMethodError(s"Did not found method ${name} $desc for $name")
-      case Some(_: AbstractMethod) => throw new AbstractMethodError(s"method ${name} $desc for $name is abstract bruh")
-      case Some(yes: (NativeMethod | JvmMethod)) => yes
+      case Some((_, _: AbstractMethod)) =>
+        throw new AbstractMethodError(s"method ${name} $desc for $name is abstract bruh")
+      case Some((declaringClazz, yes: (NativeMethod | JvmMethod))) => (declaringClazz, yes)
     }
 
   }
