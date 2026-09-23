@@ -342,7 +342,9 @@ class BytecodeExecutor(
     @tailrec
     def runLoop(): Unit = {
       if (frame.pc < code.size) {
-        println(s"RUNNING OP ${OpCode.nameOf(code(frame.pc))} 0x${code(frame.pc).toInt0Ext.toHexString}")
+        println(
+          s"RUNNING OP ${OpCode.nameOf(code(frame.pc))} 0x${code(frame.pc).toInt0Ext.toHexString} (global counter: ${BytecodeExecutor.globalCounter}"
+        )
         code(frame.pc) match {
           // ===== Constants =====
           case OpCode.nop.op => nop()
@@ -478,7 +480,10 @@ class BytecodeExecutor(
           case OpCode.jsr.op => jsr(readNext, readNext)
           case OpCode.ret.op => ret(readNext)
           // ===== Returns =====
-          case x if (OpCode.ireturn.op to OpCode.areturn.op).contains(x) => typedReturn((x - OpCode.ireturn.op).toByte)
+          case x if (OpCode.ireturn.op to OpCode.areturn.op).contains(x) =>
+            typedReturn((x - OpCode.ireturn.op).toByte)
+            println("================== RETURN")
+            return
           case OpCode.return_.op =>
             println("================== RETURN")
             return
@@ -703,7 +708,8 @@ class BytecodeExecutor(
 
   // ===== Stack management =====
 
-  private def pop(): Unit = throw new NotImplementedError("pop not implemented")
+  private def pop(): Unit =
+    operandStack.pop()
 
   private def pop2(): Unit = throw new NotImplementedError("pop2 not implemented")
 
@@ -1070,8 +1076,10 @@ class BytecodeExecutor(
       case 3 => returnPipeline(operandStack.popDouble()) // dreturn
       case 4 =>
         operandStack.pop() match {
-          case v: FValue.FValueClassRef => returnPipeline(v)
-          case v: FValue.FValueArrayRef => returnPipeline(v)
+          case v: FValue.FValueClassRef =>
+            returnPipeline(v)
+          case v: FValue.FValueArrayRef =>
+            returnPipeline(v)
           case v => throw new RuntimeException(s"areturn expected a reference value, got $v")
         }
       case other => throw new RuntimeException(s"Unknown return kind $other")
@@ -1099,7 +1107,7 @@ class BytecodeExecutor(
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val fieldSt = constantPool.resolveFieldref(idx)
     val clazz = fieldSt.clazz.resolveClazz(classLoader)
-    val field = clazz.instanceFields(fieldSt.toTuple)
+    val field = clazz.directInstanceFields(fieldSt.toTuple)
     val ref = operandStack.popClassRef()
     operandStack.push(heap.getField(clazz, field, ref.toHeapAddr))
   }
@@ -1108,10 +1116,10 @@ class BytecodeExecutor(
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val field = constantPool.resolveFieldref(idx)
     val clazz = field.clazz.resolveClazz(classLoader)
-    val fieldRes = clazz.instanceFields(field.toTuple)
+    val fieldRes = clazz.directInstanceFields(field.toTuple)
     val value = operandStack.pop()
     val ref = operandStack.popClassRef()
-    heap.setField(clazz, fieldRes, ref.toHeapAddr, value)
+    heap.setField(clazz, fieldRes, ref.toHeapAddr, value, classLoader)
   }
 
   // ===== Method invocation =====
@@ -1156,7 +1164,6 @@ class BytecodeExecutor(
       case (declaringClazz, j: JvmMethod) => invokeMethod(j, declaringClazz)
       case (declaringClazz, j: NativeMethod) => invokeMethod(j, declaringClazz)
     }
-
   }
 
   private def invokestatic(index1: Byte, index2: Byte): Unit = {
@@ -1176,8 +1183,29 @@ class BytecodeExecutor(
     }
   }
 
-  private def invokeinterface(index1: Byte, index2: Byte, count: Byte, zero: Byte): Unit =
-    throw new NotImplementedError("invokeinterface not implemented")
+  private def invokeinterface(index1: Byte, index2: Byte, count: Byte, zero: Byte): Unit = {
+    val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
+    val methodRef = constantPool.resolveMethodRef(idx) match {
+      case MethodRef.InterfaceMethod(method) => method
+      case x => throw new RuntimeException(s"Was expecting an instance method hre, got $x")
+    }
+    val (_, descriptor) = methodRef.nameAndType.toTuple
+    // Pop args + `this` off the stack to inspect `this`'s actual runtime class (needed for
+    // virtual dispatch), then reuse the popped values directly for the actual invocation.
+    val params = descriptor.params.indices.map(_ => operandStack.pop()).reverse.toList
+    val ref = operandStack.popClassRef()
+    val thisClazz = ref.value match {
+      case Some(v) => classLoader.getClass(v.className)
+      case None => throw new NullPointerException("Cannot invoke virtual method on null reference")
+    }
+    val (declaringClazz, method) =
+      thisClazz.resolveVirtualMethod(
+        methodRef.nameAndType.name.value,
+        methodRef.nameAndType.methodDescriptor,
+        objectClazz
+      )
+    invokeResolvedMethod(method, declaringClazz, params, Some(ref))
+  }
 
   private def invokedynamic(index1: Byte, index2: Byte, zero1: Byte, zero2: Byte): Unit =
     throw new NotImplementedError("invokedynamic not implemented")

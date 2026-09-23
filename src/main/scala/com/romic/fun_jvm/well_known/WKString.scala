@@ -9,7 +9,7 @@ object WKString extends WellKnownClass {
 
   def valueField(classLoader: FClassLoader): (Clazz, InstanceField) = {
     val clazz = getClazz(classLoader)
-    val field = clazz.instanceFields(("value", FTypeArray.of(FType.FTypeChar)))
+    val field = clazz.directInstanceFields(("value", FTypeArray.of(FType.FTypeChar)))
     (clazz, field)
   }
 

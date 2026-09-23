@@ -87,22 +87,24 @@ class FClassLoader(providers: List[ClassBytesProvider], heap: Heap, nativeMethod
       _.containsClass(className)
     ).getOrElse(throw new Exception(s"No class provider contains $className"))
       .getClass(className)
-    val classId = classByIds.size
-    val clazz = ClassFileInfo.fromBytes(classBytes) match {
+    ClassFileInfo.fromBytes(classBytes) match {
       case Validated.Valid(byteCode: ClassFileInfo) =>
-        val clazz = byteCode.buildClazz(heap, classId)
+        // Resolved before classId is captured: superclass/interface resolution can recursively
+        // load and register other classes, so classByIds.size must be read *after* that
+        // settles, or this class's classId would drift from its actual insertion index.
+        val superClass = byteCode.superClassName.map(getClass)
+        val interfaces = byteCode.interfaceNames.map(getClass)
+        val classId = classByIds.size
+        val superFields = superClass.map(_.directInstanceFields).getOrElse(Map.empty)
+        val clazz = byteCode.buildClazz(heap, classId, superClass, interfaces, superFields)
         classByIds += clazz
         clazz
       case Validated.Invalid(e) =>
         throw new Exception(s"Unable to read bytecode for $className: ${e.toList.mkString(" ")}")
     }
-
-    clazz
   }
 
   private def initClass(clazz: Clazz): Unit = {
-    // this trigger init of super class
-    clazz.resolveSuperAndInterfaces(this)
     val meth: Unit =
       clazz.maybeClinitMet.foreach(meth =>
         BytecodeExecutor(meth, clazz, this, heap, null, nativeMethodCatalog, BytecodeExecutor.sinkReturn).run()
@@ -120,7 +122,6 @@ class FClassLoader(providers: List[ClassBytesProvider], heap: Heap, nativeMethod
         val clazz = loadClazz(className)
         clazzs(className) = clazz
         initClass(clazz)
-        classByIds += clazz
         clazz
 
     }

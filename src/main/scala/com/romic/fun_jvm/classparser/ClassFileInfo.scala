@@ -23,6 +23,7 @@ import com.romic.fun_jvm.{
   FType,
   FValue,
   Heap,
+  InstanceField,
   JavaInstanceField,
   JvmMethod,
   Method,
@@ -794,13 +795,25 @@ class ClassFileInfo(
 
   private val className = classFileProperties.thisClass.name.value
 
-  def buildClazz(heap: Heap, classId: ClassId): Clazz = {
+  // Exposed as bare names (not the private ClassFileProperties/PoolEntry types) so callers
+  // outside this package can resolve them into actual Clazz values before calling buildClazz.
+  def superClassName: Option[String] = classFileProperties.superClass.map(_.name.value)
+
+  def interfaceNames: List[String] = classFileProperties.interfaces.map(_.name.value)
+
+  def buildClazz(
+    heap: Heap,
+    classId: ClassId,
+    superClass: Option[Clazz],
+    interfaces: List[Clazz],
+    superField: Map[(InstanceFieldName, FType), JavaInstanceField]
+  ): Clazz = {
     val (staticFieldsRaw, instanceFieldsRaw) = fields.partition(_.accessFlags.contains(ACC_STATIC))
     val staticFields = staticFieldsRaw.map { x =>
       ((x.name.value, x.descriptor.value), FValue.default(FType.parse(x.descriptor.value)))
     }.toMap
 
-    val (instanceField, secretField) = toRuntimeInstanceFields
+    val (instanceField, secretField) = toRuntimeInstanceFields(superField)
     Clazz(
       className,
       isInterface,
@@ -810,8 +823,8 @@ class ClassFileInfo(
       toNativeMethod,
       toAbstractMethod,
       instanceField,
-      classFileProperties.superClass.map(_.name.value),
-      classFileProperties.interfaces.map(_.name.value),
+      superClass,
+      interfaces,
       heap,
       classId,
       secretField
@@ -826,13 +839,19 @@ class ClassFileInfo(
 
   private val isInterface = classFileProperties.flags.contains(ACC_INTERFACE)
 
-  type InstanceField = Map[(InstanceFieldName, FType), JavaInstanceField]
+  type InstanceField_ = Map[(InstanceFieldName, FType), JavaInstanceField]
   type SecretInstanceFieldCollection = Map[(InstanceFieldName, FType), SecretInstanceField]
 
-  private def toRuntimeInstanceFields: (InstanceField, SecretInstanceFieldCollection) = {
+  private def toRuntimeInstanceFields(superFIeld: Map[(InstanceFieldName, FType), JavaInstanceField])
+    : (InstanceField_, SecretInstanceFieldCollection) = {
+    val (idx, init) = if (superFIeld.values.nonEmpty) {
+      val lastSuper = superFIeld.values.maxBy(_.fieldByteIndex)
+      val idx0 = lastSuper.fieldByteIndex + lastSuper.type_.byteCount
+      (idx0, superFIeld)
+    } else (4, Map.empty)
     // start at 4 to let space for the Header (classID)
     val (nxtIdx, instanceField) =
-      fields.foldLeft((4, Map.empty[(InstanceFieldName, FType), JavaInstanceField])) { case ((idx, acc), field) =>
+      fields.foldLeft((idx, init)) { case ((idx, acc), field) =>
         val type_ = FType.parse(field.descriptor.value)
         val nextIdx = idx + type_.byteCount.toInt0Ext
         val newAcc = acc ++ Map((field.name.value, type_) -> JavaInstanceField(field.name.value, type_, idx))

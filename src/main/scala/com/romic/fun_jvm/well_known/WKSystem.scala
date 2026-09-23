@@ -30,7 +30,7 @@ object WKSystem extends WellKnownClass {
     params: List[FValue],
     this_ : Option[FValueClassRef]
   ): Option[FValue] = {
-    val this_ = params.head match {
+    val propRef = params.head match {
       case t: FValueClassRef => t
       case wut => throw new IllegalArgumentException(s"initProperties expect a Propertie in input, got $wut")
     }
@@ -45,10 +45,10 @@ object WKSystem extends WellKnownClass {
         threadState,
         BytecodeExecutor.sinkReturn,
         params,
-        Some(this_)
+        Some(propRef)
       ).run()
     }
-    None
+    Some(propRef)
   }
 
 }

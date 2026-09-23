@@ -319,19 +319,17 @@ class Clazz(
   val jvmMethods: Map[(MethodName, MethodDescriptor), JvmMethod],
   val nativeMethods: Map[(MethodName, MethodDescriptor), NativeMethod],
   val abstractMethod: Map[(MethodName, MethodDescriptor), AbstractMethod],
-  val instanceFields: Map[(InstanceFieldName, FType), InstanceField],
-  superClassName: Option[String],
-  interfacesName: List[String],
+  val directInstanceFields: Map[(InstanceFieldName, FType), JavaInstanceField],
+  val maybeDirectSuperClass: Option[Clazz],
+  val directInterfaces: List[Clazz],
   heap: Heap,
   val classId: ClassId,
   val secretInstanceField: Map[(InstanceFieldName, FType), SecretInstanceField]
 ) {
+
   val maybeInitMet: Option[JvmMethod] = jvmMethods.get(("<init>", MethodDescriptor.void))
   val maybeClinitMet: Option[JvmMethod] = jvmMethods.get(("<clinit>", MethodDescriptor.void))
   val methods: Map[(MethodName, MethodDescriptor), Method] = jvmMethods ++ nativeMethods ++ abstractMethod
-
-  private var resolvedSuper: Option[Clazz] = None
-  private var resolvedInterfaces: List[Clazz] = List.empty
 
   private var classMirror: Option[Heap.Address] = None
 
@@ -343,29 +341,8 @@ class Clazz(
       addr
   }
 
-  def resolveSuperAndInterfaces(classLoader: FClassLoader): Unit = {
-    resolvedSuper = superClassName.map(classLoader.getClass)
-    resolvedInterfaces = interfacesName.map(classLoader.getClass)
-  }
-
-  def maybeDirectSuperClass: Option[Clazz] = {
-    superClassName match {
-      case Some(value) => resolvedSuper match {
-          case Some(value) => Some(value)
-          case None => throw new Exception(s"$name super have not been loaded")
-        }
-      case None => None
-    }
-  }
-
   def superClasses: List[Clazz] =
     (maybeDirectSuperClass ++ maybeDirectSuperClass.toList.flatMap(_.superClasses)).toList
-
-  def directInterfaces: List[Clazz] = {
-    if (interfacesName.size != resolvedInterfaces.size)
-      throw new Exception(s"$name interfaces have not been loaded")
-    resolvedInterfaces
-  }
 
   def superInterfaces: Set[Clazz] =
     (this.directInterfaces ++ this.maybeDirectSuperClass.toList.flatMap(_.superInterfaces)).toSet

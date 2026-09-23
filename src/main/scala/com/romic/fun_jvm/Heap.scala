@@ -29,12 +29,13 @@ object Heap {
   opaque type Address = Int
 
   private object ArrayHeader {
-    val arrayHeaderSize: Int = 4
+    val arrayHeaderSize: Int = 8
   }
 
   private case class ArrayHeader(size: Int, typeIndex: Int) {
     val toBytes: Array[Byte] = Utils.int2Bytes(size) ++ Utils.int2Bytes(typeIndex)
     val byteCount: Int = toBytes.length
+    assert(byteCount == ArrayHeader.arrayHeaderSize)
   }
 
 }
@@ -69,7 +70,7 @@ class Heap(size: Int) {
         val ref = arrAddr.toArrRef(FTypeChar)
         val (stClazz, fieldRef) = WKString.valueField(classloader)
         val stRef = storeNew(stClazz)
-        setField(stClazz, fieldRef, stRef, ref)
+        setField(stClazz, fieldRef, stRef, ref, classloader)
         literalPool(l) = stRef
         stRef
 
@@ -79,7 +80,7 @@ class Heap(size: Int) {
   def storeNew(clazz: Clazz): Heap.Address = {
     val clazzBytes: Array[Byte] = Utils.int2Bytes(
       clazz.classId
-    ) ++ (clazz.instanceFields ++ clazz.secretInstanceField).toList.sortBy(_._2.fieldByteIndex).flatMap(f =>
+    ) ++ (clazz.directInstanceFields ++ clazz.secretInstanceField).toList.sortBy(_._2.fieldByteIndex).flatMap(f =>
       FValue.default(f._2.type_).toBytes
     ).toArray
     writeNew(clazzBytes)
@@ -145,17 +146,17 @@ class Heap(size: Int) {
   def getArray(array: FType.FTypeArray, objRef: Heap.Address): Array[Byte] = {
     val arrSize = getArrayLen(objRef)
     val byteCount = arrSize * array.elementType.byteCount
-    readBytes(objRef + 4, byteCount)
+    readBytes(objRef + ArrayHeader.arrayHeaderSize, byteCount)
   }
 
   private def getArrayHeader(objRef: Heap.Address): ArrayHeader = {
-    val arrSize = getArrayLen(objRef)
+    val arrSize = Utils.bytes2Int(readBytes(objRef, 4))
     val arrTypeIdx = Utils.bytes2Int(readBytes(objRef + 4, 4))
     ArrayHeader(arrSize, arrTypeIdx)
   }
 
   def getArrayLen(objRef: Heap.Address): Int =
-    Utils.bytes2Int(readBytes(objRef, 4))
+    getArrayHeader(objRef).size
 
   def getArrType(arrRef: Heap.Address): FType.FTypeArray =
     arrayTypeIndex(getArrayHeader(arrRef).typeIndex)
@@ -166,13 +167,32 @@ class Heap(size: Int) {
     FValue.fromBytes(field.type_, bytes)
   }
 
-  def setField(clazz: Clazz, field: InstanceField, objRef: Heap.Address, value: FValue): Unit = {
+  def setField(
+    clazz: Clazz,
+    field: InstanceField,
+    objRef: Heap.Address,
+    value: FValue,
+    classLoader: FClassLoader
+  ): Unit = {
     val isNullRef = value match {
       case FValue.FValueClassRef(None) | FValue.FValueArrayRef(None) => true
       case _ => false
     }
-    if !isNullRef && value.getType != field.type_ then
-      throw new RuntimeException(s"field type ${field.type_} is a different type than ${value.getType}")
+    if (!isNullRef) {
+      (field.type_, value) match {
+        case (FType.FTypeClassRef(fieldClassName), FValue.FValueClassRef(Some(ref)))
+            if ref.className != fieldClassName =>
+          val valueClazz = classLoader.getClass(ref.className)
+          val isAssignable =
+            valueClazz.superClasses.exists(_.name == fieldClassName) ||
+              valueClazz.superInterfaces.exists(_.name == fieldClassName)
+          if !isAssignable then
+            throw new RuntimeException(s"field type ${field.type_} is a different type than ${value.getType}")
+        case _ =>
+          if value.getType != field.type_ then
+            throw new RuntimeException(s"field type ${field.type_} is a different type than ${value.getType}")
+      }
+    }
     val addr = objRef + field.fieldByteIndex
     writeBytes(addr, value.toBytes)
   }

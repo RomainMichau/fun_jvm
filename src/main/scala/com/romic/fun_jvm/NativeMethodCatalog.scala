@@ -34,6 +34,7 @@ class NativeMethodCatalog(heap: Heap) {
       case ("java/lang/Double", "doubleToLongBits", "(D)J") => WKDouble.doubleToLongBits
       case ("java/lang/Double", "doubleToRawLongBits", "(D)J") => WKDouble.doubleToRawLongBits
       case ("java/lang/Double", "longBitsToDouble", "(J)D") => WKDouble.longBitsToDouble
+      case ("sun/misc/VM", "initialize", "()V") => doNothing
       case other => throw new NoSuchElementException(s"No native method registered for $other")
     }
     run(clazz)

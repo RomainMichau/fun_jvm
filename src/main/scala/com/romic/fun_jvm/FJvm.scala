@@ -20,7 +20,7 @@ object FJvm {
       System.err.println("usage: hello <classFileDir>")
       sys.exit(1)
     }
-    val heap = new Heap(3000)
+    val heap = new Heap(30000)
 
     val nativeMethodCatalog = new NativeMethodCatalog(heap)
 
