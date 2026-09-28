@@ -1,12 +1,20 @@
 package com.romic.fun_jvm
 
 import com.romic.fun_jvm.FValue.{FValueClassRef, FValueFloat, FValueInt, FValueLong}
-import com.romic.fun_jvm.BytecodeExecutor.{!!!, ReturnChannel, TODO}
+import com.romic.fun_jvm.BytecodeExecutor.{
+  !!!,
+  ExecOutcome,
+  FReturnValueOutcome,
+  FThrowableOutcome,
+  ReturnChannel,
+  TODO
+}
 import com.romic.fun_jvm.FType.{FTypeArray, FTypeClassRef}
 import com.romic.fun_jvm.RuntimeConstantPool.LongOrDouble.{Double_, Long_}
 import com.romic.fun_jvm.RuntimeConstantPool.MethodRef
 import com.romic.fun_jvm.RuntimeConstantPool.MethodRef.InstanceMethod
 import com.romic.fun_jvm.classloader.FClassLoader
+import com.romic.fun_jvm.utils.Assignability
 import com.romic.fun_jvm.utils.Utils.{UByte, UShort, to, toFValue, toInt0Ext, toUShort}
 import com.romic.fun_jvm.well_known.{WKClass, WKString}
 
@@ -165,11 +173,11 @@ class OperandStack {
 
 }
 
-class MethodExecutorFactory(nativeMethodCatalog: NativeMethodCatalog, objectClazz: Clazz) {
+class MethodExecutorFactory(nativeMethodCatalog: NativeMethodCatalog, objectClazz: InstanceClazz) {
 
   def generateExecutorForMethod(
     method: NativeMethod | JvmMethod,
-    declaringClazz: Clazz,
+    declaringClazz: InstanceClazz,
     threadState: FThreadState,
     returnChannel: ReturnChannel,
     params: List[FValue],
@@ -185,7 +193,7 @@ class MethodExecutorFactory(nativeMethodCatalog: NativeMethodCatalog, objectClaz
     val heap = threadState.heap
     println(operandStack.size)
 
-    def invokeJvmMethod(jvmMethod: JvmMethod, clazz: Clazz): BytecodeExecutor = {
+    def invokeJvmMethod(jvmMethod: JvmMethod, clazz: InstanceClazz): BytecodeExecutor = {
       val newFrame = Frame(jvmMethod.maxLocals.toInt, clazz)
       val paramsStartIdx = if (jvmMethod.isStatic) 0 else 1
       this_.foreach(newFrame.localVariables(0) = _)
@@ -193,7 +201,7 @@ class MethodExecutorFactory(nativeMethodCatalog: NativeMethodCatalog, objectClaz
       new BytecodeExecutor(thread.push(newFrame), jvmMethod, classLoader, heap, objectClazz, this, returnChannel)
     }
 
-    def invokeNativeMethod(nativeMethod: NativeMethod, clazz: Clazz): NativeExecutor = {
+    def invokeNativeMethod(nativeMethod: NativeMethod, clazz: InstanceClazz): NativeExecutor = {
       val newFrame = Frame(0, clazz)
       new NativeExecutor(
         thread.push(newFrame),
@@ -217,7 +225,7 @@ class MethodExecutorFactory(nativeMethodCatalog: NativeMethodCatalog, objectClaz
 }
 
 trait MethodExecutor {
-  def run(): Option[FValue]
+  def run(): ExecOutcome
 
   def thread: FThread
 
@@ -225,7 +233,9 @@ trait MethodExecutor {
 
   def heap: Heap
 
-  protected def getThreadState: FThreadState = FThreadState(heap, classLoader, thread)
+  def objectClazz: Clazz
+
+  protected def getThreadState: FThreadState = FThreadState(heap, classLoader, thread, objectClazz)
 
 }
 
@@ -234,7 +244,7 @@ class NativeExecutor(
   method: NativeMethod,
   val classLoader: FClassLoader,
   val heap: Heap,
-  objectClazz: Clazz,
+  val objectClazz: InstanceClazz,
   nativeMethodCatalog: NativeMethodCatalog,
   executorFactory: MethodExecutorFactory,
   params: List[FValue],
@@ -247,14 +257,29 @@ class NativeExecutor(
   private val declaringClazz = frame.declaringClazz
   private val constantPool = declaringClazz.constantPool
 
-  def run(): Option[FValue] = {
+  def run(): ExecOutcome = {
     val meth = nativeMethodCatalog.get(declaringClazz, method)
-    meth(getThreadState, executorFactory, params, maybeThis)
+    try {
+      val res = meth(getThreadState, executorFactory, params, maybeThis)
+      FReturnValueOutcome(res)
+    } catch {
+      case BytecodeExecutor.NativeThrow(ref, throwable) => FThrowableOutcome(ref, throwable)
+    }
   }
 
 }
 
 object BytecodeExecutor {
+
+  sealed trait ExecOutcome
+
+  case class FReturnValueOutcome(value: Option[FValue]) extends ExecOutcome
+
+  case class FThrowableOutcome(ref: FValueClassRef, throwable: InstanceClazz) extends ExecOutcome
+
+  case class UncaughtFThrowable(ref: FValueClassRef, throwable: InstanceClazz) extends RuntimeException
+
+  case class NativeThrow(ref: FValueClassRef, throwable: InstanceClazz) extends RuntimeException
 
   type ReturnChannel = FValue => Unit
   val sinkReturn: ReturnChannel = (f: FValue) => ()
@@ -265,10 +290,10 @@ object BytecodeExecutor {
 
   def apply(
     method: JvmMethod,
-    clazz: Clazz,
+    clazz: InstanceClazz,
     classLoader: FClassLoader,
     heap: Heap,
-    objectClazz: Clazz,
+    objectClazz: InstanceClazz,
     nativeMethodCatalog: NativeMethodCatalog,
     returnChannel: ReturnChannel
   ): BytecodeExecutor = {
@@ -279,7 +304,7 @@ object BytecodeExecutor {
 
   def !!! : Nothing = throw new RuntimeException("UnexpectedType")
 
-  def TODO(): Unit = println("TODO")
+  def TODO(message: String = ""): Unit = println(s"TODO $message")
 }
 
 class BytecodeExecutor(
@@ -287,7 +312,7 @@ class BytecodeExecutor(
   method: JvmMethod,
   val classLoader: FClassLoader,
   val heap: Heap,
-  objectClazz: Clazz,
+  val objectClazz: InstanceClazz,
   executorFactory: MethodExecutorFactory,
   returnPipeline: ReturnChannel
 ) extends MethodExecutor {
@@ -298,7 +323,7 @@ class BytecodeExecutor(
   private val constantPool = declaringClazz.constantPool
   private val code = method.code
 
-  private def invokeMethod(method: NativeMethod | JvmMethod, declaringClazz: Clazz): Unit = {
+  private def invokeMethod(method: NativeMethod | JvmMethod, declaringClazz: InstanceClazz): Unit | ExecOutcome = {
     val params = method.methodDescriptor.params.indices.map(_ => operandStack.pop()).reverse.toList
     val this_ = if (method.isStatic) None else Some(operandStack.popClassRef())
     invokeResolvedMethod(method, declaringClazz, params, this_)
@@ -306,10 +331,10 @@ class BytecodeExecutor(
 
   private def invokeResolvedMethod(
     method: NativeMethod | JvmMethod,
-    declaringClazz: Clazz,
+    declaringClazz: InstanceClazz,
     params: List[FValue],
     this_ : Option[FValue.FValueClassRef]
-  ): Unit = {
+  ): Unit | ExecOutcome = {
     val maybeRes = executorFactory
       .generateExecutorForMethod(
         method,
@@ -320,7 +345,13 @@ class BytecodeExecutor(
         this_
       )
       .run()
-    maybeRes.foreach(operandStack.push)
+    maybeRes match {
+      case FReturnValueOutcome(Some(value)) => operandStack.push(value)
+      case FThrowableOutcome(ref, throwable) =>
+        operandStack.push(ref)
+        athrow().getOrElse(())
+      case FReturnValueOutcome(None) =>
+    }
   }
 
   private def readNext: Byte = {
@@ -333,19 +364,19 @@ class BytecodeExecutor(
     UByte(code(frame.pc))
   }
 
-  def run(): Option[FValue] = {
+  def run(): ExecOutcome = {
     //    println(constantPool.toVector.zipWithIndex.map(x => (x._2, x._1)).mkString("\n"))
     println(s"================== NOW RUNNING ${declaringClazz.name}.${method.methodName} ${method.methodDescriptor}")
     println(s"0x ${code.map(_.toInt0Ext.toHexString).mkString(" 0x")}")
     println(OpCode.codesToString(code))
 
     @tailrec
-    def runLoop(): Unit = {
+    def runLoop(): ExecOutcome = {
       if (frame.pc < code.size) {
         println(
           s"RUNNING OP ${OpCode.nameOf(code(frame.pc))} 0x${code(frame.pc).toInt0Ext.toHexString} (global counter: ${BytecodeExecutor.globalCounter}"
         )
-        code(frame.pc) match {
+        val outcome: Unit | ExecOutcome = code(frame.pc) match {
           // ===== Constants =====
           case OpCode.nop.op => nop()
           case OpCode.aconst_null.op => aconst_null
@@ -479,14 +510,15 @@ class BytecodeExecutor(
           case OpCode.goto.op => goto(readNext, readNext)
           case OpCode.jsr.op => jsr(readNext, readNext)
           case OpCode.ret.op => ret(readNext)
+          case OpCode.lookupswitch.op => lookupswitch()
           // ===== Returns =====
           case x if (OpCode.ireturn.op to OpCode.areturn.op).contains(x) =>
-            typedReturn((x - OpCode.ireturn.op).toByte)
+            val outcome = typedReturn((x - OpCode.ireturn.op).toByte)
             println("================== RETURN")
-            return
+            return outcome
           case OpCode.return_.op =>
             println("================== RETURN")
-            return
+            return FReturnValueOutcome(None)
           // ===== Field access =====
           case OpCode.getstatic.op => getstatic(readNext, readNext)
           case OpCode.putstatic.op => putstatic(readNext, readNext)
@@ -503,13 +535,14 @@ class BytecodeExecutor(
           case OpCode.newarray.op => newarray(readNext)
           case OpCode.anewarray.op => anewarray(readNext, readNext)
           case OpCode.arraylength.op => arraylength()
-          case OpCode.athrow.op => athrow()
+          case OpCode.athrow.op =>
+            athrow().getOrElse(())
           case OpCode.checkcast.op => checkcast(readNext, readNext)
           case OpCode.instanceof.op => instanceof(readNext, readNext)
           // ===== Synchronization =====
           case OpCode.monitorenter.op => monitorenter()
           case OpCode.monitorexit.op => monitorexit()
-          // ===== Extended (wide/tableswitch/lookupswitch skipped: variable-length operand encoding) =====
+          // ===== Extended (wide/tableswitch skipped: variable-length operand encoding) =====
           case OpCode.multianewarray.op => multianewarray(readNext, readNext, readNext)
           case x if (OpCode.ifnull.op to OpCode.ifnonnull.op).contains(x) =>
             ifnull_cond((x - OpCode.ifnull.op).toByte, readNext, readNext)
@@ -520,14 +553,18 @@ class BytecodeExecutor(
           case OpCode.impdep1.op => impdep1()
           case OpCode.impdep2.op => impdep2()
         }
-        frame.pc += 1
-        BytecodeExecutor.globalCounter += 1
-        runLoop()
-      }
+        outcome match {
+          case () =>
+            frame.pc += 1
+            BytecodeExecutor.globalCounter += 1
+            runLoop()
+          case outcome: ExecOutcome => outcome
+        }
+
+      } else FReturnValueOutcome(None)
     }
 
     runLoop()
-    None
   }
 
   // ===== Constants =====
@@ -540,7 +577,8 @@ class BytecodeExecutor(
   private def iconst_i(i: Int): Unit =
     operandStack.push(FValueInt(i))
 
-  private def lconst_n(n: Int): Unit = throw new NotImplementedError("lconst_n not implemented")
+  private def lconst_n(n: Int): Unit =
+    operandStack.push(FValue.FValueLong(n))
 
   private def fconst(f: Byte): Unit = {
     f match {
@@ -563,20 +601,22 @@ class BytecodeExecutor(
     operandStack.push(FValue.FValueInt(sh))
   }
 
-  private def ldc(idx: Byte) = {
-    val toPush = constantPool.resolveIntFlotOrRef(idx.toUShort) match {
-      case RuntimeConstantPool.IntFloatOrRef.Float_(d) => FValue.FValueFloat(d)
-      case RuntimeConstantPool.IntFloatOrRef.Int_(i) => FValue.FValueInt(i)
-      case RuntimeConstantPool.IntFloatOrRef.ClassRef(c) =>
-        c.resolveClazz(classLoader).getClassMirror(classLoader).toRef(WKClass.className)
-      case RuntimeConstantPool.IntFloatOrRef.StringRef(s) =>
-        s.resolveRef(heap, classLoader).toRef(WKString.className)
-      case s => throw new RuntimeException(s"ldc was not expecting $s")
-    }
-    operandStack.push(toPush)
+  private def ldcResolve(idx: UShort): FValue = constantPool.resolveIntFlotOrRef(idx) match {
+    case RuntimeConstantPool.IntFloatOrRef.Float_(d) => FValue.FValueFloat(d)
+    case RuntimeConstantPool.IntFloatOrRef.Int_(i) => FValue.FValueInt(i)
+    case RuntimeConstantPool.IntFloatOrRef.Ref(c) =>
+      c.resolveClazz(classLoader).getClassMirror(classLoader).toRef(WKClass.className)
+    case RuntimeConstantPool.IntFloatOrRef.StringRef(s) =>
+      s.resolveRef(heap, classLoader, objectClazz).toRef(WKString.className)
+    case s => throw new RuntimeException(s"ldc was not expecting $s")
   }
 
-  private def ldc_w(b1: Byte, b2: Byte): Unit = throw new NotImplementedError("ldc_w not implemented")
+  private def ldc(idx: Byte): Unit = operandStack.push(ldcResolve(idx.toUShort))
+
+  private def ldc_w(index1: Byte, index2: Byte): Unit = {
+    val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
+    operandStack.push(ldcResolve(idx))
+  }
 
   private def ldc2_w(index1: Byte, index2: Byte): Unit = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
@@ -595,9 +635,10 @@ class BytecodeExecutor(
   private def iload_n(n: Int): Unit =
     iload(n.toByte)
 
-  private def lload(index: Byte): Unit = throw new NotImplementedError("lload not implemented")
+  private def lload(index: Byte): Unit =
+    operandStack.push(localVariables.getLong(index))
 
-  private def lload_n(n: Int): Unit = throw new NotImplementedError("lload_n not implemented")
+  private def lload_n(n: Int): Unit = lload(n.toByte)
 
   private def fload(index: Byte): Unit =
     operandStack.push(localVariables.getFloat(index))
@@ -621,7 +662,17 @@ class BytecodeExecutor(
 
   // ===== Array loads =====
 
-  private def iaload(): Unit = throw new NotImplementedError("iaload not implemented")
+  private def iaload(): Unit = {
+    val index = operandStack.popInt().value
+    val arrRef = operandStack.popArrayRef()
+    val intVal = heap.getArrType(arrRef.toHeapAddr).elementType match {
+      case FType.FTypeInt =>
+        val int = heap.getArrayInt(arrRef.toHeapAddr, index)
+        FValue.FValueInt(int)
+      case other => throw new RuntimeException(s"aaload expected an array of int, got array of $other")
+    }
+    operandStack.push(intVal)
+  }
 
   private def laload(): Unit = throw new NotImplementedError("laload not implemented")
 
@@ -632,11 +683,22 @@ class BytecodeExecutor(
   private def aaload(): Unit = {
     val index = operandStack.popInt().value
     val arrRef = operandStack.popArrayRef()
-    val arrType = heap.getArrType(arrRef.toHeapAddr)
-    val ref = arrType.elementType match {
-      case FType.FTypeClassRef(className) => heap.getArrayRef(arrRef.toHeapAddr, index).toRef(className)
-      case other => throw new RuntimeException(s"aaload expected an array of object references, got array of $other")
-    }
+    val declaredElemType = heap.getArrType(arrRef.toHeapAddr).elementType
+    val addr = heap.getArrayRef(arrRef.toHeapAddr, index)
+    val ref =
+      if (addr == Heap.Address.null_)
+        declaredElemType match {
+          case _: FType.FTypeArray => FValue.FValueArrayRef.null_
+          case _ => FValue.FValueClassRef.null_
+        }
+      else if (heap.isArray(addr))
+        addr.toArrRef(heap.getArrType(addr).elementType)
+      else
+        declaredElemType match {
+          case FType.FTypeClassRef(className) => addr.toRef(className)
+          case other =>
+            throw new RuntimeException(s"aaload expected an array of object references, got array of $other")
+        }
     operandStack.push(ref)
   }
 
@@ -680,7 +742,12 @@ class BytecodeExecutor(
 
   // ===== Array stores =====
 
-  private def iastore(): Unit = throw new NotImplementedError("iastore not implemented")
+  private def iastore(): Unit = {
+    val value = operandStack.popInt()
+    val index = operandStack.popInt().value
+    val arrRef = operandStack.popArrayRef().toHeapAddr
+    heap.writeElementInArr(arrRef, index, value)
+  }
 
   private def lastore(): Unit = throw new NotImplementedError("lastore not implemented")
 
@@ -716,15 +783,47 @@ class BytecodeExecutor(
   private def dup(): Unit =
     operandStack.push(operandStack.head)
 
-  private def dup_x1(): Unit = throw new NotImplementedError("dup_x1 not implemented")
+  private def dup_x1(): Unit = {
+    val v1 = operandStack.pop()
+    val v2 = operandStack.pop()
+    operandStack.push(v1)
+    operandStack.push(v2)
+    operandStack.push(v1)
+  }
 
   private def dup_x2(): Unit = throw new NotImplementedError("dup_x2 not implemented")
 
-  private def dup2(): Unit = throw new NotImplementedError("dup2 not implemented")
+  private def isCategory2(v: FValue): Boolean = v match {
+    case _: FValue.FValueLong | _: FValue.FValueDouble => true
+    case _ => false
+  }
 
-  private def dup2_x1(): Unit = throw new NotImplementedError("dup2_x1 not implemented")
+  private def popCategoryGroup(): List[FValue] = {
+    val top = operandStack.pop()
+    if (isCategory2(top)) List(top) else List(operandStack.pop(), top)
+  }
 
-  private def dup2_x2(): Unit = throw new NotImplementedError("dup2_x2 not implemented")
+  private def dup2(): Unit = {
+    val group = popCategoryGroup()
+    group.foreach(operandStack.push)
+    group.foreach(operandStack.push)
+  }
+
+  private def dup2_x1(): Unit = {
+    val groupA = popCategoryGroup()
+    val b = operandStack.pop()
+    groupA.foreach(operandStack.push)
+    operandStack.push(b)
+    groupA.foreach(operandStack.push)
+  }
+
+  private def dup2_x2(): Unit = {
+    val groupA = popCategoryGroup()
+    val groupB = popCategoryGroup()
+    groupA.foreach(operandStack.push)
+    groupB.foreach(operandStack.push)
+    groupA.foreach(operandStack.push)
+  }
 
   private def swap(): Unit = throw new NotImplementedError("swap not implemented")
 
@@ -919,13 +1018,29 @@ class BytecodeExecutor(
     operandStack.push((v1 & v2).toFValue)
   }
 
-  private def ior(): Unit = throw new NotImplementedError("ior not implemented")
+  private def ior(): Unit = {
+    val v2 = operandStack.popInt().value
+    val v1 = operandStack.popInt().value
+    operandStack.push((v1 | v2).toFValue)
+  }
 
-  private def lor(): Unit = throw new NotImplementedError("lor not implemented")
+  private def lor(): Unit = {
+    val v2 = operandStack.popLong().value
+    val v1 = operandStack.popLong().value
+    operandStack.push((v1 | v2).toFValue)
+  }
 
-  private def ixor(): Unit = throw new NotImplementedError("ixor not implemented")
+  private def ixor(): Unit = {
+    val v2 = operandStack.popInt().value
+    val v1 = operandStack.popInt().value
+    operandStack.push((v1 ^ v2).toFValue)
+  }
 
-  private def lxor(): Unit = throw new NotImplementedError("lxor not implemented")
+  private def lxor(): Unit = {
+    val v2 = operandStack.popLong().value
+    val v1 = operandStack.popLong().value
+    operandStack.push((v1 ^ v2).toFValue)
+  }
 
   private def iinc(index: Byte, const: Byte): Unit =
     localVariables(index) = FValueInt(localVariables.getInt(index).value + const)
@@ -999,12 +1114,18 @@ class BytecodeExecutor(
 
   // ===== Control transfer =====
 
-  private def ifcond(cond: Byte, branchbyte1: Byte, branchbyte2: Byte): Unit = {
-    // branchbyte1/branchbyte2 were consumed via readNext before this call, so frame.pc
-    // currently sits 2 bytes past the if<cond> opcode itself.
+  // branchbyte1/branchbyte2 were consumed via readNext before this call, so frame.pc
+  // currently sits 2 bytes past the branch instruction's own address. The offset is a
+  // *signed* 16-bit value (loops need negative/backward offsets), relative to the branch
+  // instruction's own address. runLoop() adds 1 to frame.pc after every dispatched opcode,
+  // so land 1 byte short to compensate.
+  private def branchTarget(branchbyte1: Byte, branchbyte2: Byte): Int = {
     val opcodePc = frame.pc - 2
-    // The offset is a *signed* 16-bit value (loops need negative/backward offsets).
     val offset: Short = (((branchbyte1 & 0xff) << 8) | (branchbyte2 & 0xff)).toShort
+    opcodePc + offset - 1
+  }
+
+  private def ifcond(cond: Byte, branchbyte1: Byte, branchbyte2: Byte): Unit = {
     val value = operandStack.popInt()
     val taken = cond match {
       case 0 => value.value == 0
@@ -1015,17 +1136,10 @@ class BytecodeExecutor(
       case 5 => value.value <= 0
       case other => throw new Exception(s"Unkown cond $other")
     }
-    // The offset is relative to the if<cond> instruction's own address. runLoop() adds 1
-    // to frame.pc after every dispatched opcode, so land 1 byte short to compensate.
-    if (taken) frame.pc = opcodePc + offset - 1
+    if (taken) frame.pc = branchTarget(branchbyte1, branchbyte2)
   }
 
   private def if_icmp_cond(cond: Byte, branchbyte1: Byte, branchbyte2: Byte): Unit = {
-    // branchbyte1/branchbyte2 were consumed via readNext before this call, so frame.pc
-    // currently sits 2 bytes past the if<cond> opcode itself.
-    val opcodePc = frame.pc - 2
-    // The offset is a *signed* 16-bit value (loops need negative/backward offsets).
-    val offset: Short = (((branchbyte1 & 0xff) << 8) | (branchbyte2 & 0xff)).toShort
     val v2 = operandStack.popInt().value
     val v1 = operandStack.popInt().value
     val taken = cond match {
@@ -1037,53 +1151,70 @@ class BytecodeExecutor(
       case 5 => v1 <= v2
       case other => throw new RuntimeException(s"Unknown cond $other")
     }
-    if (taken) frame.pc = opcodePc + offset - 1
+    if (taken) frame.pc = branchTarget(branchbyte1, branchbyte2)
   }
 
   private def if_acmp_cond(cond: Byte, branchbyte1: Byte, branchbyte2: Byte): Unit = {
+    val v2 = operandStack.popRef()
+    val v1 = operandStack.popRef()
     cond match {
-      case 0 => ??? // if_acmpeq
-      case 1 => ??? // if_acmpne
+      case 0 => if v1 == v2 then frame.pc = branchTarget(branchbyte1, branchbyte2)
+      case 1 => if v1 != v2 then frame.pc = branchTarget(branchbyte1, branchbyte2)
       case other => throw new RuntimeException(s"Unknown cond $other")
     }
   }
 
-  private def goto(branchbyte1: Byte, branchbyte2: Byte): Unit = {
-    val opcodePc = frame.pc - 2
-    val offset: Short = (((branchbyte1 & 0xff) << 8) | (branchbyte2 & 0xff)).toShort
-    frame.pc = opcodePc + offset - 1
-  }
+  private def goto(branchbyte1: Byte, branchbyte2: Byte): Unit =
+    frame.pc = branchTarget(branchbyte1, branchbyte2)
 
   private def jsr(branchbyte1: Byte, branchbyte2: Byte): Unit = throw new NotImplementedError("jsr not implemented")
 
   private def ret(index: Byte): Unit = throw new NotImplementedError("ret not implemented")
 
+  private def readInt32At(index: Int): Int =
+    ((code(index) & 0xff) << 24) | ((code(index + 1) & 0xff) << 16) |
+      ((code(index + 2) & 0xff) << 8) | (code(index + 3) & 0xff)
+
+  private def lookupswitch(): Unit = {
+    val opcodePc = frame.pc
+    val afterOpcode = opcodePc + 1
+    val operandStart = afterOpcode + (4 - (afterOpcode % 4)) % 4
+    val defaultOffset = readInt32At(operandStart)
+    val npairs = readInt32At(operandStart + 4)
+    val key = operandStack.popInt().value
+    val pairsStart = operandStart + 8
+    val matchedOffset = (0 until npairs).view
+      .map(i => (readInt32At(pairsStart + i * 8), readInt32At(pairsStart + i * 8 + 4)))
+      .find(_._1 == key)
+      .map(_._2)
+    frame.pc = opcodePc + matchedOffset.getOrElse(defaultOffset) - 1
+  }
+
   // ===== Returns =====
 
-  private def typedReturn(kind: Byte): Unit = {
-    kind match {
+  private def typedReturn(kind: Byte): FReturnValueOutcome = {
+    val value = kind match {
       case 0 => // ireturn
         operandStack.pop() match {
-          case v: FValue.FValueInt => returnPipeline(v)
-          case v: FValue.FValueShort => returnPipeline(v)
-          case v: FValue.FValueByte => returnPipeline(v)
-          case v: FValue.FValueChar => returnPipeline(v)
-          case v: FValue.FValueBoolean => returnPipeline(v)
+          case v: FValue.FValueInt => v
+          case v: FValue.FValueShort => v
+          case v: FValue.FValueByte => v
+          case v: FValue.FValueChar => v
+          case v: FValue.FValueBoolean => v
           case v => throw new RuntimeException(s"ireturn expected an int-like value, got $v")
         }
-      case 1 => returnPipeline(operandStack.popLong()) // lreturn
-      case 2 => returnPipeline(operandStack.popFloat()) // freturn
-      case 3 => returnPipeline(operandStack.popDouble()) // dreturn
+      case 1 => operandStack.popLong() // lreturn
+      case 2 => operandStack.popFloat() // freturn
+      case 3 => operandStack.popDouble() // dreturn
       case 4 =>
         operandStack.pop() match {
-          case v: FValue.FValueClassRef =>
-            returnPipeline(v)
-          case v: FValue.FValueArrayRef =>
-            returnPipeline(v)
+          case v: FValue.FValueClassRef => v
+          case v: FValue.FValueArrayRef => v
           case v => throw new RuntimeException(s"areturn expected a reference value, got $v")
         }
       case other => throw new RuntimeException(s"Unknown return kind $other")
     }
+    FReturnValueOutcome(Some(value))
   }
 
   // ===== Field access =====
@@ -1091,7 +1222,7 @@ class BytecodeExecutor(
   private def getstatic(index1: Byte, index2: Byte) = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val field = constantPool.resolveFieldref(idx)
-    val clazz = field.clazz.resolveClazz(classLoader)
+    val clazz = field.clazz.resolveInstanceClazz(classLoader)
     val value = clazz.staticFields((field.nameAndType.name.value, field.nameAndType.descriptor.value))
     operandStack.push(value)
   }
@@ -1099,32 +1230,32 @@ class BytecodeExecutor(
   private def putstatic(index1: Byte, index2: Byte): Unit = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val field = constantPool.resolveFieldref(idx)
-    val clazz = field.clazz.resolveClazz(classLoader)
+    val clazz = field.clazz.resolveInstanceClazz(classLoader)
     clazz.staticFields(field.nameAndType.toTupleSt) = operandStack.pop()
   }
 
   private def getfield(index1: Byte, index2: Byte): Unit = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val fieldSt = constantPool.resolveFieldref(idx)
-    val clazz = fieldSt.clazz.resolveClazz(classLoader)
-    val field = clazz.directInstanceFields(fieldSt.toTuple)
+    val clazz = fieldSt.clazz.resolveInstanceClazz(classLoader)
+    val (_, field) = clazz.resolveField(fieldSt.toTuple._1, fieldSt.toTuple._2)
     val ref = operandStack.popClassRef()
-    operandStack.push(heap.getField(clazz, field, ref.toHeapAddr))
+    operandStack.push(heap.getField(clazz, field, ref.toHeapAddr, classLoader))
   }
 
   private def putfield(index1: Byte, index2: Byte): Unit = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val field = constantPool.resolveFieldref(idx)
-    val clazz = field.clazz.resolveClazz(classLoader)
-    val fieldRes = clazz.directInstanceFields(field.toTuple)
+    val clazz = field.clazz.resolveInstanceClazz(classLoader)
+    val (_, fieldRes) = clazz.resolveField(field.toTuple._1, field.toTuple._2)
     val value = operandStack.pop()
     val ref = operandStack.popClassRef()
-    heap.setField(clazz, fieldRes, ref.toHeapAddr, value, classLoader)
+    heap.setField(clazz, fieldRes, ref.toHeapAddr, value, classLoader, objectClazz)
   }
 
   // ===== Method invocation =====
 
-  private def invokevirtual(index1: Byte, index2: Byte): Unit = {
+  private def invokevirtual(index1: Byte, index2: Byte): Unit | ExecOutcome = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val methodRef = constantPool.resolveMethodRef(idx) match {
       case InstanceMethod(method) => method
@@ -1136,7 +1267,7 @@ class BytecodeExecutor(
     val params = descriptor.params.indices.map(_ => operandStack.pop()).reverse.toList
     val ref = operandStack.popClassRef()
     val thisClazz = ref.value match {
-      case Some(v) => classLoader.getClass(v.className)
+      case Some(v) => classLoader.getInstanceClass(v.className)
       case None => throw new NullPointerException("Cannot invoke virtual method on null reference")
     }
     val (declaringClazz, method) =
@@ -1148,17 +1279,17 @@ class BytecodeExecutor(
     invokeResolvedMethod(method, declaringClazz, params, Some(ref))
   }
 
-  private def invokespecial(index1: Byte, index2: Byte): Unit = {
+  private def invokespecial(index1: Byte, index2: Byte): Unit | ExecOutcome = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val (clazz, (fname, fdesc)) = constantPool.resolveMethodRef(idx) match {
       case MethodRef.InstanceMethod(v) =>
-        val resolvedClazz = v.clazz.resolveClazz(classLoader)
-        if (v.nameAndType.name.value != "<init>" && declaringClazz.isASuperClassOfThis(resolvedClazz)) {
+        val resolvedClazz = v.clazz.resolveInstanceClazz(classLoader)
+        if (v.nameAndType.name.value != "<init>" && declaringClazz.isASubClassOf(resolvedClazz)) {
           (declaringClazz.maybeDirectSuperClass.get, v.nameAndType.toTuple)
         } else {
           (resolvedClazz, v.nameAndType.toTuple)
         }
-      case MethodRef.InterfaceMethod(v) => (v.clazz.resolveClazz(classLoader), v.nameAndType.toTuple)
+      case MethodRef.InterfaceMethod(v) => (v.clazz.resolveInstanceClazz(classLoader), v.nameAndType.toTuple)
     }
     clazz.resolveSpecialMethod(fname, fdesc, objectClazz) match {
       case (declaringClazz, j: JvmMethod) => invokeMethod(j, declaringClazz)
@@ -1166,7 +1297,7 @@ class BytecodeExecutor(
     }
   }
 
-  private def invokestatic(index1: Byte, index2: Byte): Unit = {
+  private def invokestatic(index1: Byte, index2: Byte): Unit | ExecOutcome = {
 
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val methodRef = constantPool.resolveMethodRef(idx)
@@ -1183,7 +1314,7 @@ class BytecodeExecutor(
     }
   }
 
-  private def invokeinterface(index1: Byte, index2: Byte, count: Byte, zero: Byte): Unit = {
+  private def invokeinterface(index1: Byte, index2: Byte, count: Byte, zero: Byte): Unit | ExecOutcome = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
     val methodRef = constantPool.resolveMethodRef(idx) match {
       case MethodRef.InterfaceMethod(method) => method
@@ -1195,7 +1326,7 @@ class BytecodeExecutor(
     val params = descriptor.params.indices.map(_ => operandStack.pop()).reverse.toList
     val ref = operandStack.popClassRef()
     val thisClazz = ref.value match {
-      case Some(v) => classLoader.getClass(v.className)
+      case Some(v) => classLoader.getInstanceClass(v.className)
       case None => throw new NullPointerException("Cannot invoke virtual method on null reference")
     }
     val (declaringClazz, method) =
@@ -1214,8 +1345,8 @@ class BytecodeExecutor(
 
   private def new_(index1: Byte, index2: Byte): Unit = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
-    val clazz = constantPool.resolveClass(idx).resolveClazz(classLoader)
-    operandStack.push(heap.storeNew(clazz).toRef(clazz.name))
+    val clazz = constantPool.resolveClass(idx).resolveInstanceClazz(classLoader)
+    operandStack.push(heap.new_(clazz).toRef(clazz.name))
   }
 
   private def newarray(atype: Int): Unit = {
@@ -1236,7 +1367,7 @@ class BytecodeExecutor(
 
   private def anewarray(index1: Byte, index2: Byte): Unit = {
     val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
-    val classRef = constantPool.resolveClass(idx).resolveClazz(classLoader)
+    val classRef = constantPool.resolveClass(idx).resolveInstanceClazz(classLoader)
     val innerType = FTypeClassRef.of(classRef.name)
     val arrayType = FTypeArray.of(innerType)
     val ref = heap.allocateArray(arrayType, operandStack.popInt().value).toArrRef(innerType)
@@ -1249,11 +1380,42 @@ class BytecodeExecutor(
     operandStack.push(len)
   }
 
-  private def athrow(): Unit = throw new NotImplementedError("athrow not implemented")
+  private def athrow(): Option[FThrowableOutcome] = {
+    val throwableRef = operandStack.popRef() match {
+      case FValueClassRef(Some(ref)) => ref
+      case FValue.FValueArrayRef(value) => throw new RuntimeException("Expect Instance class")
+      case FValue.FValueClassRef(None) => throw new NullPointerException
+    }
+    val throwableClazz = heap.getObjectClazz(throwableRef.addr, classLoader) match {
+      case clazz: ArrayClazz => throw new IllegalStateException(s"Expecting Instance class")
+      case throwableClazz: InstanceClazz => throwableClazz
+    }
+    method.exceptionTable.find(_.catchThrowable(throwableClazz, frame.pc)) match {
+      case Some(value) =>
+        frame.pc = value.handlerPc.toInt - 1
+        operandStack.push(FValueClassRef(Some(throwableRef)))
+        None
+      case None => Some(FThrowableOutcome(FValueClassRef(Some(throwableRef)), throwableClazz))
+    }
 
-  private def checkcast(index1: Byte, index2: Byte): Unit = throw new NotImplementedError("checkcast not implemented")
+  }
 
-  private def instanceof(index1: Byte, index2: Byte): Unit = throw new NotImplementedError("instanceof not implemented")
+  private def checkcast(index1: Byte, index2: Byte): Unit = {
+    val objectRefS = operandStack.popRef()
+    val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
+    val tRef = constantPool.resolveClass(idx)
+    if (!objectRefS.isNull && !Assignability.isAssignable(objectRefS, tRef.toFType, classLoader, objectClazz))
+      throw new ClassCastException(s"cannot cast $objectRefS into $tRef")
+    operandStack.push(objectRefS)
+  }
+
+  private def instanceof(index1: Byte, index2: Byte): Unit = {
+    val objectRefS = operandStack.popRef()
+    val idx = UShort(((index1 & 0xff) << 8) | (index2 & 0xff))
+    val tClazz = constantPool.resolveClass(idx).toFType
+    val result = !objectRefS.isNull && Assignability.isAssignable(objectRefS, tClazz, classLoader, objectClazz)
+    operandStack.push(FValue.FValueInt(if (result) 1 else 0))
+  }
 
   // ===== Synchronization =====
 
@@ -1267,15 +1429,12 @@ class BytecodeExecutor(
     TODO()
   }
 
-  // ===== Extended (wide/tableswitch/lookupswitch skipped: variable-length operand encoding) =====
+  // ===== Extended (wide/tableswitch skipped: variable-length operand encoding) =====
 
   private def multianewarray(index1: Byte, index2: Byte, dimensions: Byte): Unit =
     throw new NotImplementedError("multianewarray not implemented")
 
   private def ifnull_cond(cond: Byte, branchbyte1: Byte, branchbyte2: Byte): Unit = {
-    // Same branch-offset handling as ifcond (see there for why the pc math is shaped this way).
-    val opcodePc = frame.pc - 2
-    val offset: Short = (((branchbyte1 & 0xff) << 8) | (branchbyte2 & 0xff)).toShort
     val isNull = operandStack.pop() match {
       case FValue.FValueClassRef(v) => v.isEmpty
       case FValue.FValueArrayRef(v) => v.isEmpty
@@ -1286,7 +1445,7 @@ class BytecodeExecutor(
       case 1 => !isNull // ifnonnull
       case other => throw new RuntimeException(s"Unknown cond $other")
     }
-    if (taken) frame.pc = opcodePc + offset - 1
+    if (taken) frame.pc = branchTarget(branchbyte1, branchbyte2)
   }
 
   private def goto_w(b1: Byte, b2: Byte, b3: Byte, b4: Byte): Unit =

@@ -1,19 +1,18 @@
 package com.romic.fun_jvm.well_known
 
-import com.romic.fun_jvm.{Clazz, FThreadState, FValue, MethodExecutorFactory}
+import com.romic.fun_jvm.{InstanceClazz, FThreadState, FValue, MethodExecutorFactory}
 
 object WKFloat extends WellKnownClass {
   val className: String = "java/lang/Float"
 
-  def floatToRawIntBits(clazz: Clazz)(
+  def floatToRawIntBits(clazz: InstanceClazz)(
     s: FThreadState,
     executorFactory: MethodExecutorFactory,
     params: List[FValue],
     this_ : Option[FValue.FValueClassRef]
-  ): Option[FValue.FValueInt] = params.head match {
-    case FValue.FValueFloat(fl) =>
-      Some(FValue.FValueInt(java.lang.Float.floatToRawIntBits(fl)))
-    case _ => throw new IllegalArgumentException(s"floatToRawIntBits expect a float in input")
+  ): Option[FValue.FValueInt] = {
+    val fl = NativeArgs.param1[Float](params, s)
+    Some(FValue.FValueInt(java.lang.Float.floatToRawIntBits(fl)))
   }
 
 }

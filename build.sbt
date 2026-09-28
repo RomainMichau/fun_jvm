@@ -8,6 +8,11 @@ lazy val root = project
 
     scalaVersion := scala3Version,
 
+    // Non-exhaustive pattern matches are a compile error, not just a warning - a missing case
+    // on a sealed hierarchy is exactly the kind of bug (see FValueClassRef(None) in
+    // MethodExecutor.isAssignable) that's cheap to catch here and expensive to hit at runtime.
+    scalacOptions += "-Wconf:msg=match may not be exhaustive:error",
+
     libraryDependencies += "org.scalameta" %% "munit" % "1.3.6" % Test,
     libraryDependencies += "org.typelevel" %% "cats-core" % "2.13.0",
     libraryDependencies += "org.typelevel" %% "cats-effect" % "3.7.1",

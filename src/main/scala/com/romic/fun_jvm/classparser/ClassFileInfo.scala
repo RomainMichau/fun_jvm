@@ -12,14 +12,14 @@ import cats.implicits.{
   catsSyntaxValidatedId,
   toTraverseOps
 }
-import com.romic.fun_jvm.Clazz.{InstanceFieldIndex, InstanceFieldName, MethodDescriptor}
+import com.romic.fun_jvm.InstanceClazz.{ClassName, InstanceFieldIndex, InstanceFieldName, MethodDescriptor}
 import com.romic.fun_jvm.classloader.FClassLoader.ClassId
 import com.romic.fun_jvm.classparser.ClassFileInfo.ClassAccessFlag.ACC_INTERFACE
 import com.romic.fun_jvm.utils.Utils.*
 import com.romic.fun_jvm.well_known.WKClass
 import com.romic.fun_jvm.{
   AbstractMethod,
-  Clazz,
+  InstanceClazz,
   FType,
   FValue,
   Heap,
@@ -804,17 +804,17 @@ class ClassFileInfo(
   def buildClazz(
     heap: Heap,
     classId: ClassId,
-    superClass: Option[Clazz],
-    interfaces: List[Clazz],
-    superField: Map[(InstanceFieldName, FType), JavaInstanceField]
-  ): Clazz = {
+    superClass: Option[InstanceClazz],
+    interfaces: List[InstanceClazz],
+    superAllFields: Map[(ClassName, InstanceFieldName, FType), JavaInstanceField]
+  ): InstanceClazz = {
     val (staticFieldsRaw, instanceFieldsRaw) = fields.partition(_.accessFlags.contains(ACC_STATIC))
     val staticFields = staticFieldsRaw.map { x =>
       ((x.name.value, x.descriptor.value), FValue.default(FType.parse(x.descriptor.value)))
     }.toMap
 
-    val (instanceField, secretField) = toRuntimeInstanceFields(superField)
-    Clazz(
+    val (instanceField, allFields, secretField) = toRuntimeInstanceFields(superAllFields)
+    InstanceClazz(
       className,
       isInterface,
       mutable.Map.from(staticFields),
@@ -823,40 +823,58 @@ class ClassFileInfo(
       toNativeMethod,
       toAbstractMethod,
       instanceField,
+      allFields,
       superClass,
       interfaces,
       heap,
       classId,
-      secretField
+      secretField,
+      classFileProperties.flags.map(_.mask).foldLeft(0)(_ | _)
     )
   }
 
   private def getSecretField: List[(InstanceFieldName, FType)] = {
     if (className == WKClass.className) {
-      List(("MirrorKlazzId", FType.FTypeInt))
+      List((WKClass.mirrorKlazzIdField, FType.FTypeInt))
     } else List.empty
   }
 
   private val isInterface = classFileProperties.flags.contains(ACC_INTERFACE)
 
   type InstanceField_ = Map[(InstanceFieldName, FType), JavaInstanceField]
+  type AllFieldsCollection = Map[(ClassName, InstanceFieldName, FType), JavaInstanceField]
   type SecretInstanceFieldCollection = Map[(InstanceFieldName, FType), SecretInstanceField]
 
-  private def toRuntimeInstanceFields(superFIeld: Map[(InstanceFieldName, FType), JavaInstanceField])
-    : (InstanceField_, SecretInstanceFieldCollection) = {
-    val (idx, init) = if (superFIeld.values.nonEmpty) {
-      val lastSuper = superFIeld.values.maxBy(_.fieldByteIndex)
-      val idx0 = lastSuper.fieldByteIndex + lastSuper.type_.byteCount
-      (idx0, superFIeld)
-    } else (4, Map.empty)
+  // instanceField holds only this class's own declared fields (unambiguous key within a single
+  // class); allFields is the flattened, class-qualified table (declaring class + name + type)
+  // spanning the whole hierarchy, used to size/lay out an object's full heap footprint. Keeping
+  // fields keyed by (name, type) alone here would let a subclass's own field silently overwrite
+  // an inherited one of the same name+type (e.g. every Serializable class's own
+  // serialVersionUID), corrupting the byte layout.
+  private def toRuntimeInstanceFields(superAllFields: AllFieldsCollection)
+    : (InstanceField_, AllFieldsCollection, SecretInstanceFieldCollection) = {
+    val idx = if (superAllFields.values.nonEmpty) {
+      val lastSuper = superAllFields.values.maxBy(_.fieldByteIndex)
+      lastSuper.fieldByteIndex + lastSuper.type_.byteCount
+    } else 4
     // start at 4 to let space for the Header (classID)
     val (nxtIdx, instanceField) =
-      fields.foldLeft((idx, init)) { case ((idx, acc), field) =>
-        val type_ = FType.parse(field.descriptor.value)
-        val nextIdx = idx + type_.byteCount.toInt0Ext
-        val newAcc = acc ++ Map((field.name.value, type_) -> JavaInstanceField(field.name.value, type_, idx))
-        (nextIdx, newAcc)
+      fields.filterNot(_.accessFlags.contains(ACC_STATIC)).foldLeft((
+        idx,
+        Map.empty[(InstanceFieldName, FType), JavaInstanceField]
+      )) {
+        case ((idx, acc), field) =>
+          val type_ = FType.parse(field.descriptor.value)
+          val nextIdx = idx + type_.byteCount.toInt0Ext
+          val fieldAccessFlags = field.accessFlags.map(_.mask).foldLeft(0)(_ | _)
+          val newAcc = acc ++ Map(
+            (field.name.value, type_) -> JavaInstanceField(field.name.value, type_, idx, fieldAccessFlags)
+          )
+          (nextIdx, newAcc)
       }
+
+    val allFields: AllFieldsCollection =
+      superAllFields ++ instanceField.map { case ((name, type_), f) => (className, name, type_) -> f }
 
     val (_, secretInstanceField) =
       getSecretField.foldLeft((nxtIdx, Map.empty[(InstanceFieldName, FType), SecretInstanceField])) {
@@ -866,7 +884,7 @@ class ClassFileInfo(
           val newAcc = acc ++ Map((field._1, type_) -> SecretInstanceField(field._1, type_, idx))
           (nextIdx, newAcc)
       }
-    (instanceField, secretInstanceField)
+    (instanceField, allFields, secretInstanceField)
   }
 
   private def toRuntimeJvmMethod: Map[(MethodName, MethodDescriptor), JvmMethod] = {

@@ -1,6 +1,6 @@
 package com.romic.fun_jvm
 
-import com.romic.fun_jvm.Clazz.ClassName
+import com.romic.fun_jvm.InstanceClazz.ClassName
 
 object FType {
   type Next = Int
@@ -8,7 +8,7 @@ object FType {
   def parse(st: String): FType = parseOne(st, 0)._1
 
   // returns the parsed type, plus the index right after it in `st`
-  def parseOne(st: String, i: Int): (FType, Next) = {
+  def parseOne(st: String, i: Int = 0): (FType, Next) = {
     st(i) match {
       case 'B' => (FType.FTypeByte, i + 1)
       case 'C' => (FType.FTypeChar, i + 1)
@@ -66,12 +66,13 @@ object FType {
     def byteCount: Byte = 8
   }
 
-  case class FTypeClassRef(className: String) extends FType {
+  case class FTypeClassRef(className: String) extends FTypeRef {
     def byteCount: Byte = 4
   }
 
-  case class FTypeArray(elementType: FType) extends FType {
+  case class FTypeArray(elementType: FType) extends FTypeRef {
     def byteCount: Byte = 4
+    def className: String = s"[$elementType"
   }
 
   case object FTypeChar extends FType {
@@ -106,4 +107,8 @@ sealed trait FType {
     case FType.FTypeClassRef(className) => s"L$className;"
     case FType.FTypeArray(elementType) => s"[$elementType"
 
+}
+
+sealed trait FTypeRef extends FType {
+  def className: String
 }

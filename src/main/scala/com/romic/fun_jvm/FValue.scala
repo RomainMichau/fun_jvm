@@ -1,7 +1,7 @@
 package com.romic.fun_jvm
 
 import FValue.FValueInt
-import com.romic.fun_jvm.Clazz.ClassName
+import com.romic.fun_jvm.InstanceClazz.ClassName
 import com.romic.fun_jvm.utils.Utils
 
 object FValue {
@@ -69,6 +69,17 @@ object FValue {
     case v => throw new RuntimeException(s"expected an int-like value, got $v")
   }
 
+  // Reverse of asInt: narrows a stack/local int back down to the declared int-like field type
+  // (boolean/byte/short/char) so it's written with that type's byte width instead of an int's.
+  def narrowInt(type_ : FType, i: FValueInt): FValue = type_ match {
+    case FType.FTypeInt => i
+    case FType.FTypeBoolean => FValueBoolean(i.value != 0)
+    case FType.FTypeByte => FValueByte(i.value.toByte)
+    case FType.FTypeShort => FValueShort(i.value.toShort)
+    case FType.FTypeChar => FValueChar(i.value.toChar)
+    case t => throw new RuntimeException(s"expected an int-like field type, got $t")
+  }
+
   def default(v: FType): FValue = v match {
     case FType.FTypeLong => FValueLong(0)
     case FType.FTypeInt => FValueInt(0)
@@ -83,42 +94,79 @@ object FValue {
     case FType.Void => throw new RuntimeException("void has no default value")
   }
 
-  case class FValueLong(value: Long) extends FValue
-  case class FValueInt(value: Int) extends FValue
-  case class FValueShort(value: Short) extends FValue
-  case class FValueByte(value: Byte) extends FValue
-  case class FValueFloat(value: Float) extends FValue
-  case class FValueDouble(value: Double) extends FValue
-  case class FValueChar(v: Char) extends FValue
-  case class FValueBoolean(v: Boolean) extends FValue
-  case class FValueClassRef(value: Option[ClassReferenceVal]) extends FValueRef
-  case class FValueArrayRef(value: Option[ArrReferenceVal]) extends FValueRef
+  case class FValueLong(value: Long) extends FValue {
+    def getType: FType.FTypeLong.type = FType.FTypeLong
+  }
+
+  case class FValueInt(value: Int) extends FValue {
+    def getType: FType.FTypeInt.type = FType.FTypeInt
+  }
+
+  case class FValueShort(value: Short) extends FValue {
+    def getType: FType.FTypeShort.type = FType.FTypeShort
+  }
+
+  case class FValueByte(value: Byte) extends FValue {
+    def getType: FType.FTypeByte.type = FType.FTypeByte
+  }
+
+  case class FValueFloat(value: Float) extends FValue {
+    def getType: FType.FTypeFloat.type = FType.FTypeFloat
+  }
+
+  case class FValueDouble(value: Double) extends FValue {
+    def getType: FType.FTypeDouble.type = FType.FTypeDouble
+  }
+
+  case class FValueChar(v: Char) extends FValue {
+    def getType: FType.FTypeChar.type = FType.FTypeChar
+  }
+
+  case class FValueBoolean(v: Boolean) extends FValue {
+    def getType: FType.FTypeBoolean.type = FType.FTypeBoolean
+  }
+
+  case class FValueClassRef(value: Option[ClassReferenceVal]) extends FValueRef {
+    def addr: Option[Heap.Address] = value.map(_.addr)
+
+    def isNull: Boolean = value.isEmpty
+
+    def getType: FType.FTypeClassRef = value match {
+      case Some(v) => FType.FTypeClassRef(v.className)
+      case None => throw new NullPointerException(s"Cannot get type of null value")
+    }
+
+  }
+
+  case class FValueArrayRef(value: Option[ArrReferenceVal]) extends FValueRef {
+    def addr: Option[Heap.Address] = value.map(_.addr)
+
+    def isNull: Boolean = value.isEmpty
+
+    def getType: FType.FTypeArray = value match {
+      case Some(v) => FType.FTypeArray(v.innertType)
+      case None => throw new NullPointerException(s"Cannot get type of null value")
+    }
+
+  }
 
 }
 
 case class ClassReferenceVal(addr: Heap.Address, className: ClassName)
 
-case class ArrReferenceVal(addr: Heap.Address, innertType: FType)
+case class ArrReferenceVal(addr: Heap.Address, innertType: FType) {
+  def className: ClassName = s"[$innertType"
+}
 
-sealed trait FValueRef extends FValue
+sealed trait FValueRef extends FValue {
+  def isNull: Boolean
+  def addr: Option[Heap.Address]
+  def getType: FTypeRef
+}
 
 sealed trait FValue {
 
-  def getType: FType = this match
-    case FValue.FValueLong(_) => FType.FTypeLong
-    case FValue.FValueInt(_) => FType.FTypeInt
-    case FValue.FValueShort(_) => FType.FTypeShort
-    case FValue.FValueByte(_) => FType.FTypeByte
-    case FValue.FValueFloat(_) => FType.FTypeFloat
-    case FValue.FValueDouble(_) => FType.FTypeDouble
-    case FValue.FValueChar(_) => FType.FTypeChar
-    case FValue.FValueBoolean(_) => FType.FTypeBoolean
-    case FValue.FValueClassRef(Some(v)) =>
-      FType.FTypeClassRef(v.className)
-    case FValue.FValueClassRef(None) =>
-      throw new NullPointerException(s"Cannot get type of null value")
-    case FValue.FValueArrayRef(Some(v)) => FType.FTypeArray(v.innertType)
-    case FValue.FValueArrayRef(None) => throw new NullPointerException(s"Cannot get type of null value")
+  def getType: FType
 
   def toBytes: Array[Byte] = this match
     case FValue.FValueLong(v) => Utils.long2Bytes(v)

@@ -1,8 +1,8 @@
 package com.romic.fun_jvm.well_known
 
-import com.romic.fun_jvm.Clazz.MethodDescriptor
+import com.romic.fun_jvm.InstanceClazz.MethodDescriptor
 import com.romic.fun_jvm.classloader.FClassLoader
-import com.romic.fun_jvm.{Clazz, JvmMethod}
+import com.romic.fun_jvm.{InstanceClazz, JvmMethod}
 
 object WKProperties extends WellKnownClass {
   val fun_nat_st_initProperties = "initProperties"
@@ -10,7 +10,7 @@ object WKProperties extends WellKnownClass {
 
   val className: String = "java/util/Properties"
 
-  def fun_setProperty(classLoader: FClassLoader): (Clazz, JvmMethod) = {
+  def fun_setProperty(classLoader: FClassLoader): (InstanceClazz, JvmMethod) = {
     val clazz = getClazz(classLoader)
     val func = clazz.jvmMethods((
       "setProperty",

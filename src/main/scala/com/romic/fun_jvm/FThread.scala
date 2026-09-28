@@ -6,7 +6,7 @@ import scala.collection.mutable
 
 object Frame {
 
-  def apply(maxLocals: Int, currentClass: Clazz, pc: Int = 0): Frame =
+  def apply(maxLocals: Int, currentClass: InstanceClazz, pc: Int = 0): Frame =
     new Frame(LocalVariables(maxLocals), OperandStack(), currentClass, pc)
 
 }
@@ -14,7 +14,7 @@ object Frame {
 class Frame(
   val localVariables: LocalVariables,
   val operandStack: OperandStack,
-  val declaringClazz: Clazz,
+  val declaringClazz: InstanceClazz,
   var pc: Int = 0
 ) {
 
@@ -45,17 +45,18 @@ extension (s: FrameStack) {
   def push(f: Frame): FrameStack = f +: s
   def size: Int = s.size
   def zipWithIndex: Seq[(Frame, Int)] = s.zipWithIndex
+  def apply(i: Int): Frame = s.toList(i)
 
 }
 
 object FThread {
 
-  def apply(pc: Int = 0, maxLocals: Int, currentClass: Clazz): FThread =
+  def apply(pc: Int = 0, maxLocals: Int, currentClass: InstanceClazz): FThread =
     new FThread(FrameStack(Frame(maxLocals, currentClass, pc)))
 
 }
 
-case class FThreadState(heap: Heap, classLoader: FClassLoader, thread: FThread) {
+case class FThreadState(heap: Heap, classLoader: FClassLoader, thread: FThread, objectClazz: Clazz) {
   val frame: Frame = thread.stack.head
   val operandStack: OperandStack = frame.operandStack
   val localVariables: LocalVariables = frame.localVariables

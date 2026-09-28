@@ -1,6 +1,6 @@
 package com.romic.fun_jvm.utils
 
-import com.romic.fun_jvm.Clazz.MethodDescriptor
+import com.romic.fun_jvm.InstanceClazz.MethodDescriptor
 import com.romic.fun_jvm.FType
 
 import scala.annotation.tailrec

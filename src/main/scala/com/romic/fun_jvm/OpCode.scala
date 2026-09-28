@@ -1,5 +1,7 @@
 package com.romic.fun_jvm
 
+import scala.annotation.tailrec
+
 /**
  * @param operandBytes number of bytes following the opcode itself in the bytecode stream.
  *                     -1 marks variable-length instructions (tableswitch, lookupswitch, wide),
@@ -240,16 +242,22 @@ object OpCode {
   def nameOf(b: Byte): String = fromByte(b).map(_.toString).getOrElse(f"unknown(0x${b & 0xff}%02x)")
 
   def codesToString(bytes: Vector[Byte]): String = {
-    if (bytes.isEmpty) ""
-    else {
-
-      val opCode = fromByte(bytes.head).get
-      val operandByteCount = opCode.operandBytes
-      if operandByteCount == -1 then ???
-      val operandsSt = bytes.slice(1, 1 + operandByteCount).mkString("(", ",", ")")
-      val res = s"${opCode.toString}${operandsSt}"
-      s"$res ${codesToString(bytes.drop(1 + operandByteCount))}"
+    @tailrec
+    def loop(remaining: Vector[Byte], acc: List[String]): String = {
+      if (remaining.isEmpty) acc.reverse.mkString(" ")
+      else {
+        val opCode = fromByte(remaining.head).get
+        val operandByteCount = opCode.operandBytes
+        if operandByteCount == -1 then
+          (s"${opCode.toString}(variable-length operands, disassembly stops here)" :: acc).reverse.mkString(" ")
+        else {
+          val operandsSt = remaining.slice(1, 1 + operandByteCount).mkString("(", ",", ")")
+          val res = s"${opCode.toString}${operandsSt}"
+          loop(remaining.drop(1 + operandByteCount), res :: acc)
+        }
+      }
     }
+    loop(bytes, Nil)
   }
 
   def codeToString(bytes: Vector[Byte]): String = {
@@ -257,10 +265,12 @@ object OpCode {
     else {
       val opCode = fromByte(bytes.head).get
       val operandByteCount = opCode.operandBytes
-      if operandByteCount == -1 then ???
-      val operandsSt = bytes.slice(1, 1 + operandByteCount).mkString("(", ",", ")")
-      val res = s"${opCode.toString}${operandsSt}"
-      res
+      if operandByteCount == -1 then s"${opCode.toString}(variable-length operands)"
+      else {
+        val operandsSt = bytes.slice(1, 1 + operandByteCount).mkString("(", ",", ")")
+        val res = s"${opCode.toString}${operandsSt}"
+        res
+      }
     }
   }
 
