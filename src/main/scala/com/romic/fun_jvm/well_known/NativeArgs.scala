@@ -41,6 +41,12 @@ object FValueDecoder {
       case other => throw new IllegalArgumentException(s"expected a class ref, got $other")
     }
 
+  given FValueDecoder[FValue.FValueArrayRef] = (v, _) =>
+    v match {
+      case r: FValue.FValueArrayRef => r
+      case other => throw new IllegalArgumentException(s"expected an array ref, got $other")
+    }
+
   given FValueDecoder[String] = (v, s) =>
     v match {
       case r: FValue.FValueClassRef => s.heap.readString(r, s.classLoader)

@@ -17,6 +17,7 @@ import com.romic.fun_jvm.classloader.FClassLoader
 import com.romic.fun_jvm.utils.Assignability
 import com.romic.fun_jvm.utils.Utils.{UByte, UShort, to, toFValue, toInt0Ext, toUShort}
 import com.romic.fun_jvm.well_known.{WKClass, WKString}
+import org.slf4j.LoggerFactory
 
 import scala.annotation.tailrec
 import scala.collection.mutable
@@ -174,6 +175,7 @@ class OperandStack {
 }
 
 class MethodExecutorFactory(nativeMethodCatalog: NativeMethodCatalog, objectClazz: InstanceClazz) {
+  private val logger = LoggerFactory.getLogger(getClass)
 
   def generateExecutorForMethod(
     method: NativeMethod | JvmMethod,
@@ -191,7 +193,7 @@ class MethodExecutorFactory(nativeMethodCatalog: NativeMethodCatalog, objectClaz
     val constantPool = currentClazz.constantPool
     val classLoader = threadState.classLoader
     val heap = threadState.heap
-    println(operandStack.size)
+    logger.trace("Operand stack size before invocation: {}", Int.box(operandStack.size))
 
     def invokeJvmMethod(jvmMethod: JvmMethod, clazz: InstanceClazz): BytecodeExecutor = {
       val newFrame = Frame(jvmMethod.maxLocals.toInt, clazz)
@@ -270,6 +272,7 @@ class NativeExecutor(
 }
 
 object BytecodeExecutor {
+  private val logger = LoggerFactory.getLogger(getClass)
 
   sealed trait ExecOutcome
 
@@ -304,7 +307,9 @@ object BytecodeExecutor {
 
   def !!! : Nothing = throw new RuntimeException("UnexpectedType")
 
-  def TODO(message: String = ""): Unit = println(s"TODO $message")
+  def TODO(message: String = ""): Unit =
+    if (message.nonEmpty) logger.warn("Unimplemented JVM behavior: {}", message)
+    else logger.trace("Reached unimplemented JVM behavior")
 }
 
 class BytecodeExecutor(
@@ -316,6 +321,7 @@ class BytecodeExecutor(
   executorFactory: MethodExecutorFactory,
   returnPipeline: ReturnChannel
 ) extends MethodExecutor {
+  private val logger = LoggerFactory.getLogger(getClass)
   private val frame = thread.stack.head
   private val operandStack = frame.operandStack
   private val localVariables = frame.localVariables
@@ -335,16 +341,42 @@ class BytecodeExecutor(
     params: List[FValue],
     this_ : Option[FValue.FValueClassRef]
   ): Unit | ExecOutcome = {
-    val maybeRes = executorFactory
-      .generateExecutorForMethod(
-        method,
-        declaringClazz,
-        getThreadState,
-        BytecodeExecutor.returnInOpS(operandStack),
-        params,
-        this_
-      )
-      .run()
+    val maybeRes = (declaringClazz.name, method.methodName, method.methodDescriptor.toString, params) match {
+      case ("java/lang/System", "loadLibrary", "(Ljava/lang/String;)V", _) => FReturnValueOutcome(None)
+      case (
+            "sun/nio/cs/FastCharsetProvider",
+            "charsetForName",
+            "(Ljava/lang/String;)Ljava/nio/charset/Charset;",
+            (name: FValue.FValueClassRef) :: Nil
+          ) if heap.readString(name, classLoader) == "UTF-8" =>
+        val utf8Clazz = classLoader.getInstanceClass("sun/nio/cs/UTF_8")
+        val utf8Ref = heap.new_(utf8Clazz).toRef(utf8Clazz.name)
+        val ctor = utf8Clazz.jvmMethods(("<init>", InstanceClazz.MethodDescriptor.parseMethodDescriptor("()V")))
+        executorFactory
+          .generateExecutorForMethod(
+            ctor,
+            utf8Clazz,
+            getThreadState,
+            BytecodeExecutor.sinkReturn,
+            List.empty,
+            Some(utf8Ref)
+          )
+          .run() match {
+          case FReturnValueOutcome(_) => FReturnValueOutcome(Some(utf8Ref))
+          case throwable: FThrowableOutcome => throwable
+        }
+      case _ =>
+        executorFactory
+          .generateExecutorForMethod(
+            method,
+            declaringClazz,
+            getThreadState,
+            BytecodeExecutor.returnInOpS(operandStack),
+            params,
+            this_
+          )
+          .run()
+    }
     maybeRes match {
       case FReturnValueOutcome(Some(value)) => operandStack.push(value)
       case FThrowableOutcome(ref, throwable) =>
@@ -365,16 +397,18 @@ class BytecodeExecutor(
   }
 
   def run(): ExecOutcome = {
-    //    println(constantPool.toVector.zipWithIndex.map(x => (x._2, x._1)).mkString("\n"))
-    println(s"================== NOW RUNNING ${declaringClazz.name}.${method.methodName} ${method.methodDescriptor}")
-    println(s"0x ${code.map(_.toInt0Ext.toHexString).mkString(" 0x")}")
-    println(OpCode.codesToString(code))
+    logger.debug("Running {}.{} {}", declaringClazz.name, method.methodName, method.methodDescriptor)
+    logger.trace("Bytecode: 0x {}", code.map(_.toInt0Ext.toHexString).mkString(" 0x"))
+    logger.trace("Instructions: {}", OpCode.codesToString(code))
 
     @tailrec
     def runLoop(): ExecOutcome = {
       if (frame.pc < code.size) {
-        println(
-          s"RUNNING OP ${OpCode.nameOf(code(frame.pc))} 0x${code(frame.pc).toInt0Ext.toHexString} (global counter: ${BytecodeExecutor.globalCounter}"
+        logger.trace(
+          "Running opcode {} 0x{} (global counter: {})",
+          OpCode.nameOf(code(frame.pc)),
+          code(frame.pc).toInt0Ext.toHexString,
+          Int.box(BytecodeExecutor.globalCounter)
         )
         val outcome: Unit | ExecOutcome = code(frame.pc) match {
           // ===== Constants =====
@@ -514,10 +548,10 @@ class BytecodeExecutor(
           // ===== Returns =====
           case x if (OpCode.ireturn.op to OpCode.areturn.op).contains(x) =>
             val outcome = typedReturn((x - OpCode.ireturn.op).toByte)
-            println("================== RETURN")
+            logger.trace("Method returned")
             return outcome
           case OpCode.return_.op =>
-            println("================== RETURN")
+            logger.trace("Method returned")
             return FReturnValueOutcome(None)
           // ===== Field access =====
           case OpCode.getstatic.op => getstatic(readNext, readNext)
@@ -702,7 +736,16 @@ class BytecodeExecutor(
     operandStack.push(ref)
   }
 
-  private def baload(): Unit = throw new NotImplementedError("baload not implemented")
+  private def baload(): Unit = {
+    val index = operandStack.popInt().value
+    val arrRef = operandStack.popArrayRef().toHeapAddr
+    heap.getArrType(arrRef).elementType match {
+      case FType.FTypeByte =>
+        val value = heap.getArray(FType.FTypeArray.of(FType.FTypeByte), arrRef)(index)
+        operandStack.push(FValue.FValueInt(value.toInt))
+      case other => throw new RuntimeException(s"baload expected an array of byte, got array of $other")
+    }
+  }
 
   private def caload(): Unit = {
     val index = operandStack.popInt().value
@@ -723,9 +766,10 @@ class BytecodeExecutor(
   private def istore_n(n: Int): Unit =
     istore(n.toByte)
 
-  private def lstore(index: Byte): Unit = throw new NotImplementedError("lstore not implemented")
+  private def lstore(index: Byte): Unit =
+    localVariables(index) = operandStack.popLong()
 
-  private def lstore_n(n: Int): Unit = throw new NotImplementedError("lstore_n not implemented")
+  private def lstore_n(n: Int): Unit = lstore(n.toByte)
 
   private def fstore(index: Byte): Unit = throw new NotImplementedError("fstore not implemented")
 
@@ -762,7 +806,12 @@ class BytecodeExecutor(
     heap.writeElementInArr(arrRef, index, value)
   }
 
-  private def bastore(): Unit = throw new NotImplementedError("bastore not implemented")
+  private def bastore(): Unit = {
+    val value = operandStack.popInt()
+    val index = operandStack.popInt().value
+    val arrRef = operandStack.popArrayRef().toHeapAddr
+    heap.writeElementInArr(arrRef, index, FValue.FValueByte(value.value.toByte))
+  }
 
   private def castore(): Unit = {
     val value = operandStack.popInt()
@@ -1082,7 +1131,11 @@ class BytecodeExecutor(
 
   // ===== Comparisons =====
 
-  private def lcmp(): Unit = throw new NotImplementedError("lcmp not implemented")
+  private def lcmp(): Unit = {
+    val v2 = operandStack.popLong().value
+    val v1 = operandStack.popLong().value
+    operandStack.push(FValue.FValueInt(java.lang.Long.compare(v1, v2)))
+  }
 
   private def fcmpl(): Unit = {
     val v2 = operandStack.popFloat().value
@@ -1463,7 +1516,7 @@ class BytecodeExecutor(
   private def impdep2(): Unit = throw new NotImplementedError("impdep2 not implemented")
 
   def debug(): Unit =
-    println(debugStr())
+    logger.debug(debugStr())
 
   def debugStr(): String = {
     val currentOp = if (frame.pc < code.size) f"0x${code(frame.pc) & 0xff}%02x" else "<end of code>"

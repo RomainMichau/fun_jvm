@@ -5,6 +5,7 @@ import com.romic.fun_jvm.well_known.{
   WKAccessController,
   WKClass,
   WKDouble,
+  WKFileOutputStream,
   WKFloat,
   WKObject,
   WKReflection,
@@ -14,6 +15,7 @@ import com.romic.fun_jvm.well_known.{
   WKThrowable,
   WKUnsafe
 }
+import org.slf4j.LoggerFactory
 
 type NativeMethodRunWithClazz =
   (clazz: InstanceClazz) => (
@@ -26,6 +28,7 @@ type NativeMethodRunWithClazz =
 type NativeMethodRun = (FThreadState, MethodExecutorFactory, List[FValue], Option[FValueClassRef]) => Option[FValue]
 
 class NativeMethodCatalog(heap: Heap) {
+  private val logger = LoggerFactory.getLogger(getClass)
 
   // Applies to registerNatives regardless of which class declares it, so it can't live in a
   // single WK<Class> file the way the other native methods below do.
@@ -36,10 +39,25 @@ class NativeMethodCatalog(heap: Heap) {
     this_ : Option[FValueClassRef]
   ): Option[FValue] = None
 
+  private def false_(clazz: InstanceClazz)(
+    s: FThreadState,
+    executorFactory: MethodExecutorFactory,
+    params: List[FValue],
+    this_ : Option[FValueClassRef]
+  ): Option[FValue] = Some(FValue.FValueBoolean(false))
+
+  private def negativeOne(clazz: InstanceClazz)(
+    s: FThreadState,
+    executorFactory: MethodExecutorFactory,
+    params: List[FValue],
+    this_ : Option[FValueClassRef]
+  ): Option[FValue] = Some(FValue.FValueInt(-1))
+
   def get(clazz: InstanceClazz, method: NativeMethod): NativeMethodRun = {
-    println(s"Preparing method ${clazz.name} $method")
+    logger.trace("Preparing native method {} {}", clazz.name, method)
     val run: NativeMethodRunWithClazz = (clazz.name, method.methodName, method.methodDescriptor.toString) match {
       case (_, "registerNatives", _) => noOp
+      case (_, "initIDs", "()V") => noOp
       case ("java/lang/Class", "desiredAssertionStatus0", "(Ljava/lang/Class;)Z") => WKClass.desiredAssertionStatus0
       // TODO: stub for now, should allocate/cache a Class mirror per primitive name via
       // heap.storeNew(ClassClazz.getClassClazz(heap)) + setField("name", ...) and return it
@@ -61,6 +79,8 @@ class NativeMethodCatalog(heap: Heap) {
       case ("java/lang/System", "setIn0", "(Ljava/io/InputStream;)V") => WKSystem.setIn0
       case ("java/lang/System", "setOut0", "(Ljava/io/PrintStream;)V") => WKSystem.setOut0
       case ("java/lang/System", "setErr0", "(Ljava/io/PrintStream;)V") => WKSystem.setErr0
+      case ("java/lang/System", "mapLibraryName", "(Ljava/lang/String;)Ljava/lang/String;") => WKSystem.mapLibraryName
+      case ("java/lang/System", "loadLibrary", "(Ljava/lang/String;)V") => noOp
       case ("java/lang/Float", "floatToRawIntBits", "(F)I") => WKFloat.floatToRawIntBits
       case ("java/lang/Double", "doubleToLongBits", "(D)J") => WKDouble.doubleToLongBits
       case ("java/lang/Double", "doubleToRawLongBits", "(D)J") => WKDouble.doubleToRawLongBits
@@ -69,8 +89,10 @@ class NativeMethodCatalog(heap: Heap) {
       case ("java/io/FileInputStream", "initIDs", "()V") => noOp
       case ("java/io/FileDescriptor", "initIDs", "()V") => noOp
       case ("java/io/FileOutputStream", "initIDs", "()V") => noOp
+      case (WKFileOutputStream.className, "writeBytes", "([BIIZ)V") => WKFileOutputStream.writeBytes
       case (WKObject.className, "hashCode", "()I") => WKObject.hashCode_
       case (WKObject.className, "getClass", "()Ljava/lang/Class;") => WKObject.getClass_
+      case (WKObject.className, "notifyAll", "()V") => noOp
       case (WKUnsafe.className, "arrayBaseOffset", "(Ljava/lang/Class;)I") => WKUnsafe.arrayBaseOffset
       case (WKUnsafe.className, "arrayIndexScale", "(Ljava/lang/Class;)I") => WKUnsafe.arrayIndexScale
       case (WKUnsafe.className, "addressSize", "()I") => WKUnsafe.addressSize
@@ -83,6 +105,12 @@ class NativeMethodCatalog(heap: Heap) {
       case (WKUnsafe.className, "objectFieldOffset", "(Ljava/lang/reflect/Field;)J") => WKUnsafe.objectFieldOffset
       case (WKUnsafe.className, "getIntVolatile", "(Ljava/lang/Object;J)I") => WKUnsafe.getIntVolatile
       case (WKUnsafe.className, "compareAndSwapInt", "(Ljava/lang/Object;JII)Z") => WKUnsafe.compareAndSwapInt
+      case (WKUnsafe.className, "allocateMemory", "(J)J") => WKUnsafe.allocateMemory
+      case (WKUnsafe.className, "putLong", "(JJ)V") => WKUnsafe.putLong
+      case (WKUnsafe.className, "getByte", "(J)B") => WKUnsafe.getByte
+      case (WKUnsafe.className, "freeMemory", "(J)V") => WKUnsafe.freeMemory
+      case ("java/util/concurrent/atomic/AtomicLong", "VMSupportsCS8", "()Z") => false_
+      case ("sun/misc/Signal", "findSignal", "(Ljava/lang/String;)I") => negativeOne
       case (WKReflection.className, "getCallerClass", "()Ljava/lang/Class;") => WKReflection.getCallerClass
       case (WKReflection.className, "getClassAccessFlags", "(Ljava/lang/Class;)I") =>
         WKReflection.getClassAccessFlags

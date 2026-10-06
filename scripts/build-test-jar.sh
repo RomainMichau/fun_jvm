@@ -11,7 +11,10 @@ jar_path="$project_root/target/jvmarch-test.jar"
 rm -rf "$build_dir"
 mkdir -p "$build_dir"
 
-mapfile -t java_files < <(find "$src_dir" -name '*.java')
+java_files=()
+while IFS= read -r -d '' java_file; do
+  java_files+=("$java_file")
+done < <(find "$src_dir" -name '*.java' -print0)
 if [ "${#java_files[@]}" -eq 0 ]; then
   echo "No .java files found under $src_dir" >&2
   exit 1

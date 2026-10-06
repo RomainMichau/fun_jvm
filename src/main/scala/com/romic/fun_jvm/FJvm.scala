@@ -3,10 +3,14 @@ package com.romic.fun_jvm
 import com.romic.fun_jvm.InstanceClazz.MethodDescriptor
 import com.romic.fun_jvm.classloader.{ClassLoaderBuilder, FClassLoader}
 import com.romic.fun_jvm.well_known.WKThrowable
+import org.slf4j.LoggerFactory
 
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
+import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 object FJvm {
+  private val logger = LoggerFactory.getLogger(getClass)
 
   private def genesis(heap: Heap, classLoader: FClassLoader): InstanceClazz = {
     val classToPreloads = Set("java/lang/System", "java/lang/Object", "java/lang/String")
@@ -15,6 +19,31 @@ object FJvm {
   }
 
   private val defaultTestJar = "target/jvmarch-test.jar"
+  private val defaultRtJar = Path.of("/home/rmichau/.sdkman/candidates/java/8.0.442-zulu/jre/lib/rt.jar")
+
+  private def java8RtJar: Path = {
+    val sdkmanDirectories = List(
+      Option(System.getenv("SDKMAN_DIR")).map(Path.of(_)),
+      Some(Path.of(System.getProperty("user.home"), ".sdkman")),
+      Some(Path.of(System.getProperty("user.home"), "devtools", "sdkman"))
+    ).flatten
+
+    val sdkmanRtJars = sdkmanDirectories.flatMap { sdkmanDirectory =>
+      val javaCandidates = sdkmanDirectory.resolve("candidates/java")
+      if (Files.isDirectory(javaCandidates)) {
+        Using.resource(Files.list(javaCandidates))(_.iterator.asScala.toList)
+          .filter(path => path.getFileName.toString.startsWith("8."))
+          .flatMap { candidate =>
+            List(
+              candidate.resolve("jre/lib/rt.jar"),
+              candidate.resolve("zulu-8.jdk/Contents/Home/jre/lib/rt.jar")
+            )
+          }
+      } else List.empty
+    }
+
+    (defaultRtJar :: sdkmanRtJars).find(path => Files.isRegularFile(path)).getOrElse(defaultRtJar)
+  }
 
   def main(args: Array[String]): Unit = {
 
@@ -25,19 +54,16 @@ object FJvm {
 
     val classLoader = ClassLoaderBuilder()
       .withJar(Path.of(classFilePath))
-      .withJar(Path.of(s"/home/rmichau/.sdkman/candidates/java/8.0.442-zulu/jre/lib/rt.jar"))
+      .withJar(java8RtJar)
       .build(heap, nativeMethodCatalog)
 
     try {
       classLoader.initPrimitiveClass()
 
       val objectClazz = genesis(heap, classLoader)
+      logger.info("JVM warmup complete")
       val mainClass = classLoader.getInstanceClass("JVMarch/Main")
-      //  val bytes = ClassLoader.getPlatformClassLoader
-      //    .getResourceAsStream("java/nio/file/Path.class")
-      //    .readAllBytes()
-      //  val yo = ClassFile.fromBytes(bytes)
-      println(mainClass.jvmMethods.keys)
+      logger.debug("Loaded main class methods: {}", mainClass.jvmMethods.keys)
       val main = mainClass.jvmMethods(("main", MethodDescriptor.parseMethodDescriptor("([Ljava/lang/String;)V")))
       BytecodeExecutor(
         main,
@@ -54,7 +80,7 @@ object FJvm {
       }
     } catch {
       case BytecodeExecutor.UncaughtFThrowable(ref, throwable) =>
-        System.err.println(WKThrowable.uncaughtMessage(ref, throwable, heap, classLoader))
+        logger.error(WKThrowable.uncaughtMessage(ref, throwable, heap, classLoader))
         sys.exit(1)
     }
   }

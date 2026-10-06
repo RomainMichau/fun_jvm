@@ -29,10 +29,10 @@ object WKSystem extends WellKnownClass {
     "user.name" -> "user",
     "user.home" -> "/home/user",
     "user.dir" -> ".",
-    "file.encoding" -> "UTF-8",
-    "sun.jnu.encoding" -> "UTF-8",
-    "sun.stdout.encoding" -> "UTF-8",
-    "sun.stderr.encoding" -> "UTF-8"
+    "file.encoding" -> "US-ASCII",
+    "sun.jnu.encoding" -> "US-ASCII",
+    "sun.stdout.encoding" -> "US-ASCII",
+    "sun.stderr.encoding" -> "US-ASCII"
   )
 
   def initProperties(clazz: InstanceClazz)(
@@ -65,6 +65,20 @@ object WKSystem extends WellKnownClass {
       ).run()
     }
     Some(propRef)
+  }
+
+  def mapLibraryName(clazz: InstanceClazz)(
+    threadState: FThreadState,
+    executorFactory: MethodExecutorFactory,
+    params: List[FValue],
+    this_ : Option[FValueClassRef]
+  ): Option[FValue] = {
+    val libraryName = NativeArgs.param1[String](params, threadState)
+    Some(
+      threadState.heap
+        .storeStringLiteral(s"lib$libraryName.so", threadState.classLoader, threadState.objectClazz)
+        .toRef(WKString.className)
+    )
   }
 
   def arraycopy(clazz: InstanceClazz)(

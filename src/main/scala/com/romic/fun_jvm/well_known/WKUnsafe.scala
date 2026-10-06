@@ -1,5 +1,6 @@
 package com.romic.fun_jvm.well_known
 
+import com.romic.fun_jvm.utils.Utils
 import com.romic.fun_jvm.utils.Utils.toFValue
 import com.romic.fun_jvm.{
   ArrayClazz,
@@ -94,6 +95,68 @@ object WKUnsafe extends WellKnownClass {
     } else {
       Some(FValue.FValueBoolean(false))
     }
+}
+
+  private var nextMemoryAddress: Long = 1L
+  private var nativeMemory: Map[Long, Array[Byte]] = Map.empty
+
+  private def memoryAt(address: Long, byteCount: Int): (Array[Byte], Int) =
+    nativeMemory.collectFirst {
+      case (base, memory) if address >= base && address <= base + memory.length - byteCount =>
+        (memory, (address - base).toInt)
+    }.getOrElse(throw new IllegalArgumentException(s"Invalid native memory range at $address for $byteCount bytes"))
+
+  def allocateMemory(clazz: InstanceClazz)(
+    s: FThreadState,
+    executorFactory: MethodExecutorFactory,
+    params: List[FValue],
+    this_ : Option[FValue.FValueClassRef]
+  ): Option[FValue] = {
+    val byteCount = NativeArgs.param1[Long](params, s)
+    if (byteCount < 0 || byteCount > Int.MaxValue) {
+      throw new IllegalArgumentException(s"Unsupported native memory size $byteCount")
+    }
+    val address = nextMemoryAddress
+    nativeMemory += address -> Array.fill(byteCount.toInt)(0.toByte)
+    nextMemoryAddress += byteCount + 1
+    Some(FValue.FValueLong(address))
+  }
+
+  def putLong(clazz: InstanceClazz)(
+    s: FThreadState,
+    executorFactory: MethodExecutorFactory,
+    params: List[FValue],
+    this_ : Option[FValue.FValueClassRef]
+  ): Option[FValue] = {
+    val (address, value) = NativeArgs.param2[Long, Long](params, s)
+    val (memory, offset) = memoryAt(address, java.lang.Long.BYTES)
+    Array.copy(Utils.long2Bytes(value), 0, memory, offset, java.lang.Long.BYTES)
+    None
+  }
+
+  def getByte(clazz: InstanceClazz)(
+    s: FThreadState,
+    executorFactory: MethodExecutorFactory,
+    params: List[FValue],
+    this_ : Option[FValue.FValueClassRef]
+  ): Option[FValue] = {
+    val address = NativeArgs.param1[Long](params, s)
+    val (memory, offset) = memoryAt(address, 1)
+    Some(FValue.FValueByte(memory(offset)))
+  }
+
+  def freeMemory(clazz: InstanceClazz)(
+    s: FThreadState,
+    executorFactory: MethodExecutorFactory,
+    params: List[FValue],
+    this_ : Option[FValue.FValueClassRef]
+  ): Option[FValue] = {
+    val address = NativeArgs.param1[Long](params, s)
+    if (!nativeMemory.contains(address)) {
+      throw new IllegalArgumentException(s"Unknown native memory address $address")
+    }
+    nativeMemory -= address
+    None
   }
 
 }
